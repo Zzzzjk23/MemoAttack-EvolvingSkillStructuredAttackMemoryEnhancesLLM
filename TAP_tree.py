@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from LLMmodels import AttackerLLM, EvaluatorLLM, TargetLLM, convert_to_openai_messages
 from system_prompts import get_attacker_system_prompt, get_evaluator_system_prompt_for_judge, get_evaluator_system_prompt_for_on_topic, get_evaluator_prompt_for_prompt_category
-from global_context import global_context
 from fastchat.model import get_conversation_template
 import copy
 import json

@@ -1,10 +1,10 @@
 from LLMmodels import AttackerLLM, EvaluatorLLM, TargetLLM
 from TAP_tree import TreeNode, Tree
-from global_context import global_context
 from types import SimpleNamespace
 import csv
 from logger import WandBLogger
 import statistics
+import os
 
 def posterior_evidence_update(tap_tree):
     """
@@ -212,11 +212,9 @@ def tap(args, logger=None):
                     tap_tree.if_jailbreak = True
                     print(f'{tap_tree.goal} 越狱成功，共生成{tap_tree.request_count}个请求')
                     success_list = convert_to_openai_messages(new_node.conv)
-                    global_context.enqueue(success_list[1:])
                     
                     if logger:
                         logger.log_success(tap_tree.goal, tap_tree.request_count, depth)
-                        logger.log_global_context(global_context.convert_to_json())
                     posterior_evidence_update(tap_tree)
                     tap_tree.posterior_evidence.save()
                     return True, tap_tree.request_count
@@ -234,6 +232,8 @@ def main(i):
     logger = WandBLogger(project_name="TAP_Jailbreak")
     advbench_file = f'AdvBench_subset_{i}.csv'
     goals_and_targets = []
+    if not os.path.exists('attacker_input'):
+        os.makedirs('attacker_input')
     with open(advbench_file, encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for index, row in enumerate(reader):

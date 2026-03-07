@@ -1,5 +1,5 @@
 from litai import LLM
-from global_context import global_context
+
 from system_prompts import get_attacker_system_prompt
 from openai import OpenAI
 import json
@@ -12,7 +12,7 @@ LLM_choices = {
 }
 client = OpenAI(
     base_url="https://api.tokenfactory.nebius.com/v1/",
-    api_key="v1.CmQKHHN0YXRpY2tleS1lMDBxMDN4MHl3d3FlZ2Q4cDkSIXNlcnZpY2VhY2NvdW50LWUwMHdwcWpmYWcwNXp6YTRrZzIMCMrxgcoGEPyfrr0DOgwIy_SZlQcQgIyNngJAAloDZTAw.AAAAAAAAAAFZJjga8wP8uscjRXekw5wFdE2ySYvpwKLD-pH8KlRyKUYypqrhqdunKX2HlZ7svbE61JCwPV0gTI3eXy-3Z7AG"
+    api_key= os.getenv("NEBIUS_API_KEY")
 )
 
 def convert_to_openai_messages(template):

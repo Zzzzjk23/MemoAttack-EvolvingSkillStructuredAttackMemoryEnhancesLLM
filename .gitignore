@@ -8,6 +8,10 @@ __pycache__/
 venv/
 env/
 
+# wandb 与 attacker_input（不纳入版本控制）
+wandb/
+attacker_input/
+
 # 环境变量（可能含密钥）
 .env
 .env.local

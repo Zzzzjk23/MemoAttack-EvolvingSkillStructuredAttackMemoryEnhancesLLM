@@ -56,17 +56,17 @@ Most runtime parameters are centralized in:
 This includes:
 
 - attacker / evaluator / target model names
-- Nebius base URL and API key env variable names
+- per-role base URLs and API key env variable names
 - TAP tree parameters (`max_depth`, `branching_factor`, `width`)
 - posterior / Thompson Sampling parameters
 - input / output path templates
 - batch subset range
 
-Set your API key before running:
+Set your API keys before running:
 
 ```powershell
+$env:ALI_API_KEY="your-ali-key"
 $env:NEBIUS_API_KEY="your-key"
-$env:OPENAI_BASE_URL="https://api.studio.nebius.com/v1/"
 ```
 
 ## Running
@@ -135,12 +135,13 @@ success, request_count = tap(args, logger=None)
 - `runtime.attack_loop`
   One attack-step execution path with controller + registry updates.
 - `llm.clients`
-  Nebius/OpenAI-compatible LLM wrappers and structured tool parsing.
+  Role-specific OpenAI-compatible LLM wrappers and structured tool parsing.
 - `methods.method_registry`
   Dynamic method inventory and lifecycle management.
 
 ## Notes
 
-- The code expects OpenAI-compatible chat completions from Nebius.
+- The attacker and evaluator use DashScope-compatible chat completions.
+- The target model uses the Nebius-compatible chat completions endpoint.
 - When optional dependencies are missing, some modules fall back gracefully:
   embedding uses a deterministic local fallback, and WandB logging disables itself.

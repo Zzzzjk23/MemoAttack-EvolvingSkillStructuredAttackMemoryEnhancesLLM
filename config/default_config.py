@@ -15,17 +15,21 @@ def get_workspace_root() -> Path:
 
 @dataclass
 class AttackConfig:
-    attacker_model: str = "Qwen/Qwen3-Coder-480B-A35B-Instruct"
-    evaluator_model: str = "moonshotai/Kimi-K2-Instruct"
-    target_model: str = "openai/gpt-oss-120b"
+    attacker_model: str = "qwen3-max-2026-01-23"
+    evaluator_model: str = "glm-5"
+    target_model: str = "moonshotai/Kimi-K2.5"
+
+    attacker_base_url: str = "https://coding.dashscope.aliyuncs.com/v1"
+    evaluator_base_url: str = "https://coding.dashscope.aliyuncs.com/v1"
+    target_base_url: str = "https://api.tokenfactory.nebius.com/v1/"
+
+    attacker_api_key_env: str = "ALI_API_KEY"
+    evaluator_api_key_env: str = "ALI_API_KEY"
+    target_api_key_env: str = "NEBIUS_API_KEY"
 
     attacker_temperature: float = 0.7
     attacker_top_p: float = 0.9
     attacker_max_tokens: int = 5000
-
-    openai_base_url: str = "https://api.studio.nebius.com/v1/"
-    primary_api_key_env: str = "NEBIUS_API_KEY"
-    secondary_api_key_env: str = "OPENAI_API_KEY"
 
     max_depth: int = 5
     branching_factor: int = 4

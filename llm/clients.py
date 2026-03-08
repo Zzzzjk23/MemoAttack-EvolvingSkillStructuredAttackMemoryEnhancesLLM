@@ -20,13 +20,12 @@ from llm.prompts import (
 from methods.method_schema import AttackMethod, AttackMethodProposal, AttackPromptDraft
 
 
-def _create_client(config: Optional[AttackConfig] = None):
-    config = config or AttackConfig()
+def _create_client(*, base_url: str, api_key_env: str):
     if OpenAI is None:
         return None
     return OpenAI(
-        base_url=os.getenv("OPENAI_BASE_URL", config.openai_base_url),
-        api_key=os.getenv(config.primary_api_key_env) or os.getenv(config.secondary_api_key_env),
+        base_url=base_url,
+        api_key=os.getenv(api_key_env),
     )
 
 
@@ -105,10 +104,17 @@ def convert_to_openai_messages(template):
 
 
 class BaseLLMClient:
-    def __init__(self, model_name: str, config: Optional[AttackConfig] = None):
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        base_url: str,
+        api_key_env: str,
+        config: Optional[AttackConfig] = None,
+    ):
         self.model_name = model_name
         self.config = config or AttackConfig()
-        self.client = _create_client(self.config)
+        self.client = _create_client(base_url=base_url, api_key_env=api_key_env)
 
     def _chat_completion(self, messages, *, tools=None, tool_choice=None, **kwargs):
         if self.client is None:
@@ -137,7 +143,12 @@ class AttackerLLM(BaseLLMClient):
         config: Optional[AttackConfig] = None,
     ):
         resolved_config = config or AttackConfig()
-        super().__init__(model_name=model_name, config=resolved_config)
+        super().__init__(
+            model_name=model_name,
+            base_url=resolved_config.attacker_base_url,
+            api_key_env=resolved_config.attacker_api_key_env,
+            config=resolved_config,
+        )
         self.temperature = (
             resolved_config.attacker_temperature if temperature is None else temperature
         )
@@ -446,6 +457,15 @@ class AttackerLLM(BaseLLMClient):
 
 
 class EvaluatorLLM(BaseLLMClient):
+    def __init__(self, model_name: str, config: Optional[AttackConfig] = None):
+        resolved_config = config or AttackConfig()
+        super().__init__(
+            model_name=model_name,
+            base_url=resolved_config.evaluator_base_url,
+            api_key_env=resolved_config.evaluator_api_key_env,
+            config=resolved_config,
+        )
+
     def out_of_target(self, off_target_system_prompt: str, off_target_prompt: str) -> str:
         response = self._chat_completion(
             [
@@ -480,6 +500,15 @@ class EvaluatorLLM(BaseLLMClient):
 
 
 class TargetLLM(BaseLLMClient):
+    def __init__(self, model_name: str, config: Optional[AttackConfig] = None):
+        resolved_config = config or AttackConfig()
+        super().__init__(
+            model_name=model_name,
+            base_url=resolved_config.target_base_url,
+            api_key_env=resolved_config.target_api_key_env,
+            config=resolved_config,
+        )
+
     def target_response(self, prompt: str) -> str:
         response = self._chat_completion(
             [{"role": "user", "content": [{"type": "text", "text": prompt}]}]

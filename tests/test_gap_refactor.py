@@ -9,6 +9,7 @@ from unittest.mock import patch
 from config.default_config import AttackConfig
 from controller.mode_selector import select_mode
 from llm.clients import AttackerLLM
+from llm.prompts import get_attacker_method_system_prompt, get_attacker_system_prompt
 from methods.method_registry import CategoryMethodPool, MethodRegistry
 from methods.method_schema import (
     ACTIVE,
@@ -19,6 +20,7 @@ from methods.method_schema import (
     AttackPromptDraft,
     AttackState,
 )
+from runtime.search_tree import get_init_msg, process_target_response
 from runtime.tap_runner import select_nodes, tap
 from scoring.progress_metric import compute_normalized_gap_improvement
 
@@ -158,6 +160,43 @@ class GapRefactorTests(unittest.TestCase):
         self.assertNotIn("Payload Splitting", proposal.method_name)
         self.assertNotIn("Adaptive Bootstrap", proposal.method_name)
         self.assertIn("current goal", proposal.method_rationale)
+
+    def test_attacker_system_prompt_discourages_placeholder_outputs(self):
+        prompt = get_attacker_system_prompt("Goal text", "Target prefix")
+        self.assertIn("full standalone prompt", prompt)
+        self.assertIn("Never output placeholders", prompt)
+        self.assertIn('"success prompt"', prompt)
+
+    def test_method_system_prompt_discourages_generic_method_names(self):
+        prompt = get_attacker_method_system_prompt()
+        self.assertIn("mechanism-specific method", prompt)
+        self.assertIn('"Invented Method"', prompt)
+
+    def test_search_tree_messages_require_full_prompt_text(self):
+        attack_method = SimpleNamespace(
+            method_name="Concrete Method",
+            method_description="Concrete description",
+            method_rationale="Concrete rationale",
+            attack_plan="Concrete plan",
+            prompt_template="Concrete template",
+            applicability="general",
+            novelty_note="novel",
+            expected_mechanism="mechanism",
+        )
+        init_msg = get_init_msg("Goal text", "Target prefix", attack_method, [], MODE_INVENT)
+        self.assertIn("exact next prompt to send to the target model", init_msg)
+        self.assertIn("Never output placeholders", init_msg)
+
+        follow_up = process_target_response(
+            "partial success response",
+            4,
+            "Goal text",
+            attack_method,
+            [],
+            MODE_REUSE,
+        )
+        self.assertIn("previous language model output and score", follow_up)
+        self.assertIn("preserve what appears to work", follow_up)
 
     def test_tap_entrypoint_runs_with_dynamic_inventory(self):
         class MockAttackerLLM:

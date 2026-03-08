@@ -12,6 +12,9 @@ env/
 wandb/
 attacker_input/
 
+# 数据文件（不纳入版本控制）
+posterior_evidence_v2.pkl
+
 # 环境变量（可能含密钥）
 .env
 .env.local

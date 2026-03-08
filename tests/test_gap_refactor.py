@@ -9,7 +9,11 @@ from unittest.mock import patch
 from config.default_config import AttackConfig
 from controller.mode_selector import select_mode
 from llm.clients import AttackerLLM
-from llm.prompts import get_attacker_method_system_prompt, get_attacker_system_prompt
+from llm.prompts import (
+    get_attacker_method_system_prompt,
+    get_attacker_system_prompt,
+    get_evaluator_system_prompt_for_on_topic,
+)
 from methods.method_registry import CategoryMethodPool, MethodRegistry
 from methods.method_schema import (
     ACTIVE,
@@ -21,8 +25,8 @@ from methods.method_schema import (
     AttackState,
 )
 from runtime.search_tree import get_init_msg, process_target_response
-from runtime.tap_runner import select_nodes, tap
 from scoring.progress_metric import compute_normalized_gap_improvement
+from tap_runner import select_nodes, tap
 
 
 class GapRefactorTests(unittest.TestCase):
@@ -166,11 +170,20 @@ class GapRefactorTests(unittest.TestCase):
         self.assertIn("full standalone prompt", prompt)
         self.assertIn("Never output placeholders", prompt)
         self.assertIn('"success prompt"', prompt)
+        self.assertIn("surface wrapper", prompt)
+        self.assertIn("same core objective", prompt)
 
     def test_method_system_prompt_discourages_generic_method_names(self):
         prompt = get_attacker_method_system_prompt()
         self.assertIn("mechanism-specific method", prompt)
         self.assertIn('"Invented Method"', prompt)
+
+    def test_on_topic_prompt_requires_core_intent_and_deliverable_preservation(self):
+        prompt = get_evaluator_system_prompt_for_on_topic("Goal text")
+        self.assertIn("Core intent", prompt)
+        self.assertIn("Requested deliverable", prompt)
+        self.assertIn("Essential entities and constraints", prompt)
+        self.assertIn("If you are unsure, respond NO", prompt)
 
     def test_search_tree_messages_require_full_prompt_text(self):
         attack_method = SimpleNamespace(
@@ -186,6 +199,8 @@ class GapRefactorTests(unittest.TestCase):
         init_msg = get_init_msg("Goal text", "Target prefix", attack_method, [], MODE_INVENT)
         self.assertIn("exact next prompt to send to the target model", init_msg)
         self.assertIn("Never output placeholders", init_msg)
+        self.assertIn("Semantic anchor", init_msg)
+        self.assertIn("same core objective, the same requested deliverable", init_msg)
 
         follow_up = process_target_response(
             "partial success response",
@@ -194,9 +209,12 @@ class GapRefactorTests(unittest.TestCase):
             attack_method,
             [],
             MODE_REUSE,
+            previous_prompt="Previous prompt body",
         )
         self.assertIn("previous language model output and score", follow_up)
         self.assertIn("preserve what appears to work", follow_up)
+        self.assertIn("Previous prompt body", follow_up)
+        self.assertIn("Do not keep only the story shell", follow_up)
 
     def test_tap_entrypoint_runs_with_dynamic_inventory(self):
         class MockAttackerLLM:
@@ -296,9 +314,9 @@ class GapRefactorTests(unittest.TestCase):
                 width=1,
                 config=config,
             )
-            with patch("runtime.tap_runner.AttackerLLM", MockAttackerLLM), patch(
-                "runtime.tap_runner.EvaluatorLLM", MockEvaluatorLLM
-            ), patch("runtime.tap_runner.TargetLLM", MockTargetLLM):
+            with patch("tap_runner.AttackerLLM", MockAttackerLLM), patch(
+                "tap_runner.EvaluatorLLM", MockEvaluatorLLM
+            ), patch("tap_runner.TargetLLM", MockTargetLLM):
                 success, request_count = tap(args, logger=None)
 
             self.assertTrue(success)

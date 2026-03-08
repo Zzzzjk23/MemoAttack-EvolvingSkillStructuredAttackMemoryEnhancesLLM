@@ -374,6 +374,7 @@ class AttackerLLM(BaseLLMClient):
                 parent_target_response=attack_state.current_target_response,
                 parent_score=attack_state.current_raw_score,
                 recent_examples=example_text,
+                previous_prompt=getattr(attack_state, "current_prompt", None),
             )
             messages = [
                 {"role": "system", "content": get_attacker_system_prompt(goal, target_str)},

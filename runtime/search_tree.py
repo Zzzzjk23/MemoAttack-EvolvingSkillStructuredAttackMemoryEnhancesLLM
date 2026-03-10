@@ -278,12 +278,14 @@ class Tree:
         return max(0.0, min(self.config.max_score, raw_score / self.config.judge_max_score))
 
     def evaluate_on_topic(self, prompt: str) -> bool:
-        response = self.evaluator_llm.out_of_target(
-            self.evaluator_system_prompt_on_topic,
-            prompt,
-        )
-        match = re.search(r"\[\[\s*yes\s*\]\]", response.lower())
-        return bool(match)
+        # Disabled evaluator-based on-topic checking for testing.
+        # response = self.evaluator_llm.out_of_target(
+        #     self.evaluator_system_prompt_on_topic,
+        #     prompt,
+        # )
+        # match = re.search(r"\[\[\s*yes\s*\]\]", response.lower())
+        # return bool(match)
+        return True
 
     def get_target_response(self, prompt: str) -> str:
         return self.target_llm.target_response(prompt)

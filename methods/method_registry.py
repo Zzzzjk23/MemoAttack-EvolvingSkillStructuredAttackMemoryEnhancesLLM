@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 import pickle
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -18,8 +19,7 @@ from methods.method_schema import (
 
 
 @dataclass
-class CategoryMethodPool:
-    category_id: str
+class MethodPool:
     config: AttackConfig
     methods: Dict[str, AttackMethod] = field(default_factory=dict)
 
@@ -63,7 +63,6 @@ class CategoryMethodPool:
 
         method = AttackMethod.from_proposal(
             proposal=proposal,
-            category_id=self.category_id,
             created_via=created_via,
             parent_method_id=parent_method_id,
             stats=build_method_stats(
@@ -130,6 +129,51 @@ class CategoryMethodPool:
             ):
                 method.status = ELIMINATED
 
+    def enforce_cap(self) -> None:
+        cap = self.config.max_global_methods
+        if cap <= 0:
+            return
+        while len(self.methods) > cap:
+            victim = self._select_eviction_candidate()
+            if victim is None:
+                break
+            del self.methods[victim.method_id]
+
+    def _select_eviction_candidate(self) -> Optional[AttackMethod]:
+        for status in (ELIMINATED, RETIRED):
+            candidates = [method for method in self.methods.values() if method.status == status]
+            if candidates:
+                return min(candidates, key=self._status_eviction_key)
+        active_methods = [method for method in self.methods.values() if method.status == ACTIVE]
+        if not active_methods:
+            return None
+        return min(active_methods, key=self._active_eviction_key)
+
+    def _status_eviction_key(self, method: AttackMethod) -> Tuple[float, int, float, float]:
+        return (
+            method.utility_score,
+            method.usage_count,
+            method.recent_progress_value_mean,
+            self._creation_sort_value(method),
+        )
+
+    def _active_eviction_key(self, method: AttackMethod) -> Tuple[float, int, float, float]:
+        return (
+            method.utility_score,
+            method.usage_count,
+            method.recent_progress_value_mean,
+            self._creation_sort_value(method),
+        )
+
+    @staticmethod
+    def _creation_sort_value(method: AttackMethod) -> float:
+        if not method.creation_time:
+            return float("inf")
+        try:
+            return -datetime.fromisoformat(method.creation_time).timestamp()
+        except ValueError:
+            return float("inf")
+
 
 class MethodRegistry:
     def __init__(
@@ -143,11 +187,12 @@ class MethodRegistry:
             self.path = load_path
         loaded = self._load_existing(self.path)
         if loaded is not None:
-            self.prompt_categories_dict = loaded.prompt_categories_dict
+            self.pool = loaded.pool
             self.config = loaded.config
             self.path = loaded.path
+            self.pool.config = self.config
         else:
-            self.prompt_categories_dict: Dict[str, CategoryMethodPool] = {}
+            self.pool = MethodPool(config=self.config)
 
     @staticmethod
     def _load_existing(path: str) -> Optional["MethodRegistry"]:
@@ -161,35 +206,28 @@ class MethodRegistry:
             return None
         if not isinstance(loaded, MethodRegistry):
             return None
+        if not hasattr(loaded, "pool") or not isinstance(loaded.pool, MethodPool):
+            return None
         return loaded
 
     def save(self, path: Optional[str] = None) -> str:
         save_path = Path(path or self.path)
+        self.pool.config = self.config
         with save_path.open("wb") as handle:
             pickle.dump(self, handle)
         return str(save_path.resolve())
 
-    def create_category(self, category_id: str) -> CategoryMethodPool:
-        if category_id not in self.prompt_categories_dict:
-            self.prompt_categories_dict[category_id] = CategoryMethodPool(
-                category_id=category_id,
-                config=self.config,
-            )
-        return self.prompt_categories_dict[category_id]
-
-    def get_or_create_pool(self, category_id: str) -> CategoryMethodPool:
-        return self.create_category(category_id)
+    def get_pool(self) -> MethodPool:
+        return self.pool
 
     def register_method(
         self,
-        category_id: str,
         proposal: AttackMethodProposal,
         created_via: str,
         parent_method_id: Optional[str] = None,
         metadata: Optional[Dict[str, object]] = None,
     ) -> AttackMethod:
-        pool = self.get_or_create_pool(category_id)
-        return pool.register_method(
+        return self.pool.register_method(
             proposal=proposal,
             created_via=created_via,
             parent_method_id=parent_method_id,
@@ -198,7 +236,6 @@ class MethodRegistry:
 
     def record_attempt(
         self,
-        category_id: str,
         method_id: str,
         attempt_result: AttackAttemptResult,
         prompt_text: str,
@@ -206,8 +243,7 @@ class MethodRegistry:
         after_prompt: str,
         target_response: str,
     ) -> AttackMethod:
-        pool = self.get_or_create_pool(category_id)
-        method = pool.record_attempt(
+        method = self.pool.record_attempt(
             method_id=method_id,
             attempt_result=attempt_result,
             prompt_text=prompt_text,
@@ -215,8 +251,9 @@ class MethodRegistry:
             after_prompt=after_prompt,
             target_response=target_response,
         )
-        pool.apply_lifecycle_rules()
+        self.pool.apply_lifecycle_rules()
+        self.pool.enforce_cap()
         return method
 
-    def iter_methods(self, category_id: str) -> Iterable[AttackMethod]:
-        return self.get_or_create_pool(category_id).get_all_methods()
+    def iter_methods(self) -> Iterable[AttackMethod]:
+        return self.pool.get_all_methods()

@@ -70,6 +70,7 @@ class MethodPosteriorStats:
 
 @dataclass
 class MethodExampleRecord:
+    prompt_text: str
     prompt_embedding: Optional[Tuple[float, ...]]
     before_prompt: str
     after_prompt: str
@@ -183,7 +184,6 @@ class AttackAttemptResult:
 class AttackState:
     goal: str
     target: str
-    category_id: str
     current_prompt: str
     current_target_response: Optional[str]
     current_raw_score: float
@@ -210,7 +210,6 @@ SearchState = AttackState
 @dataclass
 class AttackMethod:
     method_id: str
-    category_id: str
     method_name: str
     method_description: str
     method_rationale: str
@@ -236,7 +235,6 @@ class AttackMethod:
     def from_proposal(
         cls,
         proposal: AttackMethodProposal,
-        category_id: str,
         created_via: str,
         stats: MethodPosteriorStats,
         parent_method_id: Optional[str] = None,
@@ -247,7 +245,6 @@ class AttackMethod:
             combined_metadata.update(metadata)
         return cls(
             method_id=str(uuid.uuid4()),
-            category_id=category_id,
             method_name=proposal.method_name,
             method_description=proposal.method_description,
             method_rationale=proposal.method_rationale,
@@ -280,6 +277,16 @@ class AttackMethod:
             self.recent_success_history
         )
 
+    @property
+    def recent_progress_value_mean(self) -> float:
+        if not self.recent_progress_values:
+            return 0.0
+        return sum(self.recent_progress_values) / len(self.recent_progress_values)
+
+    @property
+    def utility_score(self) -> float:
+        return 0.55 * self.stats.progress_mean + 0.45 * self.stats.success_mean
+
     def update_recent_windows(
         self,
         made_progress: bool,
@@ -305,6 +312,7 @@ class AttackMethod:
     ) -> None:
         self.example_records.append(
             MethodExampleRecord(
+                prompt_text=prompt_text,
                 prompt_embedding=_embedding_to_tuple(prompt_text),
                 before_prompt=before_prompt,
                 after_prompt=after_prompt,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 def get_default_registry_path() -> str:
     workspace_root = Path(__file__).resolve().parent.parent
-    return str(workspace_root / "posterior_evidence_v2.pkl")
+    return str(workspace_root / "posterior_evidence_global.pkl")
 
 
 def get_workspace_root() -> Path:
@@ -17,7 +17,7 @@ def get_workspace_root() -> Path:
 class AttackConfig:
     attacker_model: str = "Qwen/Qwen3-Coder-480B-A35B-Instruct"
     evaluator_model: str = "moonshotai/Kimi-K2-Instruct"
-    target_model: str = "openai/gpt-oss-120b"
+    target_model: str = "openai/gpt-oss-20b"
 
     attacker_base_url: str = "https://api.tokenfactory.nebius.com/v1/"
     evaluator_base_url: str = "https://api.tokenfactory.nebius.com/v1/"
@@ -74,6 +74,7 @@ class AttackConfig:
     recent_performance_window: int = 8
     duplicate_similarity_threshold: float = 0.92
     method_example_limit: int = 3
+    max_global_methods: int = 32
     proposal_retry_limit: int = 2
 
     mode_reuse_bias: float = 1.0

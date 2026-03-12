@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict
 
 from config.default_config import AttackConfig
-from methods.method_registry import CategoryMethodPool
+from methods.method_registry import MethodPool
 from methods.method_schema import AttackMethod, AttackState, tuple_to_array
 from embeddings.prompt_embedding import cosine_similarity
 
@@ -11,7 +11,7 @@ from embeddings.prompt_embedding import cosine_similarity
 def build_context_features(
     state: AttackState,
     method: AttackMethod,
-    pool: CategoryMethodPool,
+    pool: MethodPool,
 ) -> Dict[str, float]:
     goal_similarity = 0.0
     if state.goal_embedding is not None and method.method_embedding is not None:

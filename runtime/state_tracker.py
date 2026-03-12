@@ -14,7 +14,6 @@ def build_attack_state(tree, node) -> AttackState:
     return AttackState(
         goal=tree.goal,
         target=tree.target,
-        category_id=tree.prompt_category,
         current_prompt=current_prompt,
         current_target_response=getattr(node, "target_response", None),
         current_raw_score=float(getattr(node, "outside_score", 0) or 0),

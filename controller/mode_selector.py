@@ -5,7 +5,7 @@ import random
 from typing import Dict
 
 from config.default_config import AttackConfig
-from methods.method_registry import CategoryMethodPool
+from methods.method_registry import MethodPool
 from methods.method_schema import MODE_INVENT, MODE_MUTATE, MODE_REUSE, AttackState
 
 
@@ -27,12 +27,12 @@ def _softmax_sample(scores: Dict[str, float], rng: random.Random) -> str:
 
 def select_mode(
     context: AttackState,
-    category_state: CategoryMethodPool,
+    method_pool: MethodPool,
     config: AttackConfig,
     rng: random.Random | None = None,
 ) -> str:
     rng = rng or random.Random()
-    if not category_state.has_active_methods():
+    if not method_pool.has_active_methods():
         return MODE_INVENT
 
     scores = {
@@ -40,7 +40,7 @@ def select_mode(
         MODE_MUTATE: config.mode_mutate_bias,
         MODE_INVENT: config.mode_invent_bias,
     }
-    active_methods = category_state.get_active_methods()
+    active_methods = method_pool.get_active_methods()
     if len(active_methods) <= config.sparse_pool_threshold:
         scores[MODE_INVENT] += config.mode_cold_start_bonus
     if context.current_score <= config.low_score_threshold:

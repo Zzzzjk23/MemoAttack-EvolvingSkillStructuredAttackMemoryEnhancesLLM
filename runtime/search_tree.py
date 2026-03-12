@@ -28,7 +28,6 @@ from llm.clients import (
 )
 from llm.prompts import (
     get_attacker_system_prompt,
-    get_evaluator_prompt_for_prompt_category,
     get_evaluator_system_prompt_for_judge,
     get_evaluator_system_prompt_for_on_topic,
 )
@@ -63,6 +62,7 @@ def _format_examples(examples) -> str:
             "\n".join(
                 [
                     f"Example {index}:",
+                    f"Goal: {example.prompt_text}",
                     f"Before: {example.before_prompt}",
                     f"After: {example.after_prompt}",
                     f"Target response: {example.target_response}",
@@ -261,18 +261,7 @@ class Tree:
         self.evaluator_llm = evaluator_llm
         self.target_llm = target_llm
         self.if_jailbreak = False
-        self.prompt_category = self.get_prompt_category() or "Uncategorized"
-        self.method_registry.create_category(self.prompt_category)
         self.random = random.Random()
-
-    def get_prompt_category(self) -> Optional[str]:
-        response = self.evaluator_llm.prompt_category(
-            get_evaluator_prompt_for_prompt_category(self.goal)
-        )
-        match = re.search(r"\[\[\s*(.*?)\s*\]\]", str(response))
-        if match:
-            return match.group(1)
-        return None
 
     def normalize_score(self, raw_score: float) -> float:
         return max(0.0, min(self.config.max_score, raw_score / self.config.judge_max_score))

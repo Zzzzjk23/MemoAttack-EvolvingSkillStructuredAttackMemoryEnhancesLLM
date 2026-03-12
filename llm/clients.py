@@ -356,7 +356,11 @@ class AttackerLLM(BaseLLMClient):
             messages = convert_to_openai_messages(conversation)
         else:
             example_text = "\n".join(
-                f"Before: {example.before_prompt}\nAfter: {example.after_prompt}"
+                (
+                    f"Goal: {example.prompt_text}\n"
+                    f"Before: {example.before_prompt}\n"
+                    f"After: {example.after_prompt}"
+                )
                 for example in examples
             ) or "No examples."
             user_prompt = get_attack_prompt_user_prompt(
@@ -431,7 +435,6 @@ class AttackerLLM(BaseLLMClient):
             )(),
             attack_method=AttackMethod(
                 method_id="compat",
-                category_id="compat",
                 method_name="compat",
                 method_description="Compatibility generation",
                 method_rationale="Compatibility generation",
@@ -490,12 +493,6 @@ class EvaluatorLLM(BaseLLMClient):
                     "content": [{"type": "text", "text": target_response}],
                 },
             ]
-        )
-        return response.choices[0].message.content
-
-    def prompt_category(self, prompt: str) -> str:
-        response = self._chat_completion(
-            [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         )
         return response.choices[0].message.content
 

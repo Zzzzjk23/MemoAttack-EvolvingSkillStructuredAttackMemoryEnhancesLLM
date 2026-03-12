@@ -51,7 +51,6 @@ def _materialize_method(tree, state, pool, mode: str):
                 config=tree.config,
             )
             method = tree.method_registry.register_method(
-                category_id=tree.prompt_category,
                 proposal=proposal,
                 created_via=MODE_MUTATE,
                 parent_method_id=parent_method.method_id,
@@ -66,7 +65,6 @@ def _materialize_method(tree, state, pool, mode: str):
         config=tree.config,
     )
     method = tree.method_registry.register_method(
-        category_id=tree.prompt_category,
         proposal=proposal,
         created_via=MODE_INVENT,
         parent_method_id=None,
@@ -77,7 +75,7 @@ def _materialize_method(tree, state, pool, mode: str):
 
 def execute_attack_step(tree, parent_node):
     state = build_attack_state(tree, parent_node)
-    pool = tree.method_registry.get_or_create_pool(tree.prompt_category)
+    pool = tree.method_registry.get_pool()
     mode = select_mode(state, pool, tree.config, rng=tree.random)
     mode, method, debug = _materialize_method(tree, state, pool, mode)
 
@@ -152,7 +150,6 @@ def execute_attack_step(tree, parent_node):
     )
 
     tree.method_registry.record_attempt(
-        category_id=tree.prompt_category,
         method_id=method.method_id,
         attempt_result=attempt_result,
         prompt_text=tree.goal,

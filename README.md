@@ -124,7 +124,7 @@ success, request_count = tap(args, logger=None)
 
 - Results CSV: `results_{subset_index}.csv`
 - Attack prompt snapshots: `attacker_input/`
-- Method registry persistence: `posterior_evidence_v2.pkl`
+- Method registry persistence: `posterior_evidence_global.pkl`
 
 ## Main Modules
 

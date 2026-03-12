@@ -7,7 +7,7 @@ from typing import List, Optional
 from bandit.contextual_bandit import build_context_features, compute_context_bonus
 from bandit.posterior import sample_progress, sample_success
 from config.default_config import AttackConfig
-from methods.method_registry import CategoryMethodPool
+from methods.method_registry import MethodPool
 from methods.method_schema import AttackMethod, AttackState
 
 
@@ -23,7 +23,7 @@ class ThompsonSample:
 def sample_method_utility(
     method: AttackMethod,
     state: AttackState,
-    pool: CategoryMethodPool,
+    pool: MethodPool,
     config: AttackConfig,
     rng: random.Random,
 ) -> ThompsonSample:
@@ -47,7 +47,7 @@ def sample_method_utility(
 
 def select_method_via_thompson(
     state: AttackState,
-    pool: CategoryMethodPool,
+    pool: MethodPool,
     config: AttackConfig,
     rng: Optional[random.Random] = None,
 ) -> Optional[ThompsonSample]:

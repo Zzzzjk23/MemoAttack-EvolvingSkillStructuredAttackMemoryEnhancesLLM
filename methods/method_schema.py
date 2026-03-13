@@ -214,6 +214,7 @@ class AttackState:
     history: List[AttackAttemptResult] = field(default_factory=list)
     goal_embedding: Optional[Tuple[float, ...]] = None
     prompt_embedding: Optional[Tuple[float, ...]] = None
+    global_context_json: str = "[]"
 
     @property
     def score_trajectory(self) -> List[float]:

@@ -202,6 +202,7 @@ def execute_attack_step(tree, parent_node):
     on_topic = tree.evaluate_on_topic(draft.prompt)
     target_response = tree.get_target_response(draft.prompt) if on_topic else None
     raw_score = tree.evaluate_outside_score(target_response) if on_topic else 0
+    tree.global_context.enqueue((raw_score, draft.prompt))
     normalized_score = tree.normalize_score(raw_score)
     prev_score = state.current_score
     normalized_progress = compute_normalized_gap_improvement(

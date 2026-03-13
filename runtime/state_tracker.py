@@ -8,6 +8,7 @@ def build_attack_state(tree, node) -> AttackState:
     history = list(getattr(node, "history", []) or [])
     current_prompt = getattr(node, "prompt", tree.goal)
     goal_embedding = tuple(tree.goal_ebd.tolist()) if tree.goal_ebd is not None else None
+    global_context = getattr(tree, "global_context", None)
     prompt_embedding = (
         tuple(embed_prompt(current_prompt).tolist()) if current_prompt else None
     )
@@ -25,6 +26,9 @@ def build_attack_state(tree, node) -> AttackState:
         history=history,
         goal_embedding=goal_embedding,
         prompt_embedding=prompt_embedding,
+        global_context_json=(
+            global_context.convert_to_json() if global_context is not None else "[]"
+        ),
     )
 
 

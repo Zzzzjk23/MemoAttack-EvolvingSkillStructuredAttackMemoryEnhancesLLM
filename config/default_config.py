@@ -38,6 +38,7 @@ class AttackConfig:
     wandb_project_name: str = "TAP_Jailbreak"
     attacker_input_dir: str = "attacker_input"
     attacker_input_filename_template: str = "openai_messages_{index}_{request_count}.json"
+    global_context_queue_size: int = 8
     advbench_subset_template: str = "AdvBench_subset_{subset_index}.csv"
     results_output_template: str = "results_{subset_index}.csv"
     subset_start_index: int = 1
@@ -103,3 +104,6 @@ class AttackConfig:
             request_count=request_count,
         )
         return str(get_workspace_root() / self.attacker_input_dir / filename)
+
+    def resolve_global_context_path(self) -> str:
+        return str(get_workspace_root() / "global_context.json")

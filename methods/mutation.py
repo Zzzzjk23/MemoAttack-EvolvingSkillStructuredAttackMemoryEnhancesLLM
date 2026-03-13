@@ -8,11 +8,12 @@ from methods.method_schema import AttackMethod, AttackMethodProposal, AttackStat
 
 def mutate_method(
     attacker_llm,
-    parent_method: AttackMethod,
+    candidate_parent_methods: Iterable[AttackMethod],
     state: AttackState,
     existing_methods: Iterable[AttackMethod],
     config: AttackConfig,
 ) -> AttackMethodProposal:
+    candidate_parent_methods = list(candidate_parent_methods)
     last_error = None
     for _ in range(max(1, config.proposal_retry_limit)):
         try:
@@ -22,7 +23,7 @@ def mutate_method(
                 attack_state=state,
                 mode="mutate",
                 existing_methods=list(existing_methods),
-                parent_method=parent_method,
+                candidate_parent_methods=candidate_parent_methods,
             )
         except Exception as exc:  # pragma: no cover - network/runtime failure path
             last_error = exc

@@ -51,10 +51,27 @@ def select_method_via_thompson(
     config: AttackConfig,
     rng: Optional[random.Random] = None,
 ) -> Optional[ThompsonSample]:
+    selections = select_methods_via_thompson(
+        state=state,
+        pool=pool,
+        config=config,
+        rng=rng,
+        limit=1,
+    )
+    return selections[0] if selections else None
+
+
+def select_methods_via_thompson(
+    state: AttackState,
+    pool: MethodPool,
+    config: AttackConfig,
+    rng: Optional[random.Random] = None,
+    limit: int = 1,
+) -> List[ThompsonSample]:
     rng = rng or random.Random()
     methods: List[AttackMethod] = pool.get_active_methods()
     if not methods:
-        return None
+        return []
     samples = [
         sample_method_utility(
             method=method,
@@ -65,4 +82,6 @@ def select_method_via_thompson(
         )
         for method in methods
     ]
-    return max(samples, key=lambda item: item.utility)
+    resolved_limit = max(1, limit)
+    ranked_samples = sorted(samples, key=lambda item: item.utility, reverse=True)
+    return ranked_samples[:resolved_limit]

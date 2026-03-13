@@ -52,6 +52,7 @@ class AttackConfig:
 
     thompson_progress_weight: float = 0.55
     thompson_success_weight: float = 0.45
+    thompson_candidate_method_count: int = 2
     context_similarity_weight: float = 0.12
     context_recent_progress_weight: float = 0.10
     context_recent_success_weight: float = 0.08

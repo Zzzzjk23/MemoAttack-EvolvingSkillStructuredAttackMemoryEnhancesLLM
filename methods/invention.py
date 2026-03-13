@@ -21,7 +21,7 @@ def invent_method(
                 attack_state=state,
                 mode="invent",
                 existing_methods=list(existing_methods),
-                parent_method=None,
+                candidate_parent_methods=[],
             )
         except Exception as exc:  # pragma: no cover - network/runtime failure path
             last_error = exc

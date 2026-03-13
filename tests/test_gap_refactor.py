@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from config.default_config import AttackConfig
+from controller.method_selector import select_existing_methods
 from controller.mode_selector import select_mode
 from llm.clients import AttackerLLM
 from llm.prompts import (
@@ -256,7 +257,7 @@ class GapRefactorTests(unittest.TestCase):
                 attack_state=state,
                 mode=MODE_INVENT,
                 existing_methods=[],
-                parent_method=None,
+                candidate_parent_methods=[],
             )
         self.assertIn("Strategy", proposal.method_name)
         self.assertIn("current goal", proposal.method_rationale)
@@ -267,7 +268,7 @@ class GapRefactorTests(unittest.TestCase):
             target_str="Target prefix",
             mode=MODE_INVENT,
             existing_method_summaries=["Method A: Description"],
-            parent_method_summary=None,
+            candidate_parent_method_summaries=[],
             current_score=0.0,
             recent_summary="No recent attempts.",
         )
@@ -279,16 +280,71 @@ class GapRefactorTests(unittest.TestCase):
         self.assertIn("structured tool output", prompt)
         self.assertIn("Never output placeholders", prompt)
         self.assertIn('"success prompt"', prompt)
+        self.assertIn("selected_method_names", prompt)
+        self.assertIn("choose either one or selectively hybridize", prompt)
 
     def test_method_system_prompt_discourages_generic_method_names(self):
         prompt = get_attacker_method_system_prompt()
         self.assertIn("mechanism-specific method", prompt)
         self.assertIn('"Invented Method"', prompt)
+        self.assertIn("selected_parent_method_names", prompt)
 
     def test_on_topic_prompt_requires_yes_no_format(self):
         prompt = get_evaluator_system_prompt_for_on_topic("Goal text")
         self.assertIn("same information as the following", prompt)
         self.assertIn("Response: [[response]]", prompt)
+
+    def test_thompson_selector_returns_top_two_methods(self):
+        config = AttackConfig(thompson_candidate_method_count=2)
+        pool = MethodPool(config=config)
+        methods = [
+            pool.register_method(
+                AttackMethodProposal(
+                    method_name=name,
+                    method_description=f"{name} description",
+                    method_rationale=f"{name} rationale",
+                    mutation_of=None,
+                    prompt_template="template",
+                    attack_plan="plan",
+                    applicability="general",
+                    novelty_note="new",
+                    expected_mechanism="mechanism",
+                ),
+                created_via=MODE_INVENT,
+            )
+            for name in ("Method A", "Method B", "Method C")
+        ]
+        state = AttackState(
+            goal="goal",
+            target="target",
+            current_prompt="goal",
+            current_target_response=None,
+            current_raw_score=0.0,
+            current_score=0.0,
+            depth=0,
+            node_id=None,
+            recent_method_id=None,
+            recent_mode=None,
+        )
+        utility_by_id = {
+            methods[0].method_id: 0.2,
+            methods[1].method_id: 0.9,
+            methods[2].method_id: 0.6,
+        }
+
+        def fake_sample(method, state, pool, config, rng):
+            return SimpleNamespace(
+                method=method,
+                utility=utility_by_id[method.method_id],
+                sample_progress_value=0.0,
+                sample_success_value=0.0,
+                context_bonus=0.0,
+            )
+
+        with patch("bandit.thompson_sampling.sample_method_utility", side_effect=fake_sample):
+            selections = select_existing_methods(state, pool, config)
+
+        self.assertEqual([item.method.method_name for item in selections], ["Method B", "Method C"])
 
     def test_search_tree_messages_include_source_goal_in_examples(self):
         example = SimpleNamespace(
@@ -309,19 +365,38 @@ class GapRefactorTests(unittest.TestCase):
             novelty_note="novel",
             expected_mechanism="mechanism",
         )
-        init_msg = get_init_msg("Goal text", "Target prefix", attack_method, [example], MODE_INVENT)
+        support_method = SimpleNamespace(
+            method_name="Support Method",
+            method_description="Support description",
+            method_rationale="Support rationale",
+            attack_plan="Support plan",
+            prompt_template="Support template",
+            applicability="niche",
+            novelty_note="support novel",
+            expected_mechanism="support mechanism",
+        )
+        init_msg = get_init_msg(
+            "Goal text",
+            "Target prefix",
+            [attack_method, support_method],
+            [example],
+            MODE_INVENT,
+        )
         self.assertIn("Goal: Source goal", init_msg)
+        self.assertIn("Candidate method 1", init_msg)
+        self.assertIn("selected_method_names", init_msg)
         follow_up = process_target_response(
             "partial success response",
             4,
             "Goal text",
-            attack_method,
+            [attack_method, support_method],
             [example],
             MODE_REUSE,
             previous_prompt="Previous prompt body",
         )
         self.assertIn("Goal: Source goal", follow_up)
         self.assertIn("previous language model output and score", follow_up)
+        self.assertIn("choose either candidate method", follow_up)
 
     def test_select_nodes_preserves_top_score_behavior(self):
         nodes = [
@@ -349,13 +424,22 @@ class GapRefactorTests(unittest.TestCase):
                 attack_state,
                 mode,
                 existing_methods,
-                parent_method,
+                candidate_parent_methods,
             ):
                 return AttackMethodProposal(
                     method_name="Invented Method" if mode == MODE_INVENT else "Adaptive Method",
                     method_description=f"{mode} description",
                     method_rationale=f"{mode} rationale",
-                    mutation_of=parent_method.method_name if parent_method else None,
+                    mutation_of=(
+                        candidate_parent_methods[0].method_name
+                        if candidate_parent_methods
+                        else None
+                    ),
+                    selected_parent_method_names=(
+                        [candidate_parent_methods[0].method_name]
+                        if candidate_parent_methods
+                        else []
+                    ),
                     prompt_template="template",
                     attack_plan="plan",
                     applicability="general",
@@ -373,12 +457,18 @@ class GapRefactorTests(unittest.TestCase):
                 attack_method,
                 mode,
                 examples,
+                candidate_methods=None,
             ):
                 self.prompt_calls += 1
                 prompt = "partial success prompt" if self.prompt_calls == 1 else "success prompt"
                 return AttackPromptDraft(
                     improvement=f"improvement-{self.prompt_calls}",
                     prompt=prompt,
+                    selected_method_names=(
+                        [candidate_methods[0].method_name]
+                        if candidate_methods
+                        else [attack_method.method_name]
+                    ),
                     prompt_template="template",
                     attack_plan="plan",
                     rationale="rationale",

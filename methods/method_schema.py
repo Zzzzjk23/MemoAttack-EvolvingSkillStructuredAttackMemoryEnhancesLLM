@@ -38,6 +38,19 @@ def _tuple_to_array(value: Optional[Tuple[float, ...]]) -> Optional[np.ndarray]:
     return np.asarray(value, dtype=float)
 
 
+def _coerce_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    else:
+        try:
+            items = list(value)
+        except TypeError:
+            items = [value]
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
 @dataclass
 class MethodPosteriorStats:
     progress_alpha: float
@@ -91,6 +104,7 @@ class AttackMethodProposal:
     applicability: str
     novelty_note: str
     expected_mechanism: str
+    selected_parent_method_names: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -107,6 +121,9 @@ class AttackMethodProposal:
             applicability=str(data.get("applicability", "")).strip(),
             novelty_note=str(data.get("novelty_note", "")).strip(),
             expected_mechanism=str(data.get("expected_mechanism", "")).strip(),
+            selected_parent_method_names=_coerce_string_list(
+                data.get("selected_parent_method_names")
+            ),
             metadata=dict(data.get("metadata", {}) or {}),
         )
         proposal.validate()
@@ -143,6 +160,7 @@ class AttackMethodProposal:
 class AttackPromptDraft:
     improvement: str
     prompt: str
+    selected_method_names: List[str] = field(default_factory=list)
     prompt_template: str = ""
     attack_plan: str = ""
     rationale: str = ""
@@ -153,6 +171,7 @@ class AttackPromptDraft:
         draft = cls(
             improvement=str(data.get("improvement", "")).strip(),
             prompt=str(data.get("prompt", "")).strip(),
+            selected_method_names=_coerce_string_list(data.get("selected_method_names")),
             prompt_template=str(data.get("prompt_template", "")).strip(),
             attack_plan=str(data.get("attack_plan", "")).strip(),
             rationale=str(data.get("rationale", "")).strip(),

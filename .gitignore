@@ -31,3 +31,9 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# AdvBench 与结果数据（不纳入版本控制）
+AdvBench_subset_*.csv
+results_*.csv
+global_context.json
+posterior_evidence_global.pkl

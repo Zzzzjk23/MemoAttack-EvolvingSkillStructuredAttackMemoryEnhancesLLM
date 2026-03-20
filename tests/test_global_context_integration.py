@@ -10,8 +10,9 @@ from unittest.mock import patch
 
 from config.default_config import AttackConfig
 from llm.prompts import get_attack_prompt_user_prompt, get_method_proposal_user_prompt
-from methods.method_schema import MODE_INVENT, AttackMethodProposal, AttackPromptDraft
+from methods.method_schema import MODE_INVENT, MODE_REUSE, AttackMethodProposal, AttackPromptDraft
 from runtime.global_context import GlobalContextQueue
+from runtime.search_tree import get_init_msg, process_target_response
 from tap_runner import tap
 
 
@@ -78,9 +79,9 @@ class GlobalContextIntegrationTests(unittest.TestCase):
             missing.load_from_file(os.path.join(temp_dir, "missing.json"))
             self.assertTrue(missing.is_empty())
 
-    def test_attack_prompt_includes_global_context_but_method_prompt_does_not(self):
+    def test_attack_prompt_includes_global_context_only_for_invent_and_mutate(self):
         global_context_json = '[{"score": 7, "prompt": "prompt-a"}]'
-        attack_prompt = get_attack_prompt_user_prompt(
+        invent_prompt = get_attack_prompt_user_prompt(
             goal="Goal text",
             target_str="Target prefix",
             mode="invent",
@@ -91,9 +92,23 @@ class GlobalContextIntegrationTests(unittest.TestCase):
             previous_prompt="Previous prompt body",
             global_context_json=global_context_json,
         )
-        self.assertIn("GLOBAL_CONTEXT_JSON:", attack_prompt)
-        self.assertIn(global_context_json, attack_prompt)
-        self.assertIn("Do not copy any stored prompt verbatim.", attack_prompt)
+        self.assertIn("GLOBAL_CONTEXT_JSON:", invent_prompt)
+        self.assertIn(global_context_json, invent_prompt)
+        self.assertIn("Do not copy any stored prompt verbatim.", invent_prompt)
+
+        reuse_prompt = get_attack_prompt_user_prompt(
+            goal="Goal text",
+            target_str="Target prefix",
+            mode=MODE_REUSE,
+            candidate_methods=[],
+            parent_target_response="target response",
+            parent_score=4,
+            recent_examples="No examples.",
+            previous_prompt="Previous prompt body",
+            global_context_json=global_context_json,
+        )
+        self.assertNotIn("GLOBAL_CONTEXT_JSON:", reuse_prompt)
+        self.assertNotIn(global_context_json, reuse_prompt)
 
         method_prompt = get_method_proposal_user_prompt(
             goal="Goal text",
@@ -105,6 +120,42 @@ class GlobalContextIntegrationTests(unittest.TestCase):
             recent_summary="No recent attempts.",
         )
         self.assertNotIn("GLOBAL_CONTEXT_JSON", method_prompt)
+
+    def test_search_tree_only_appends_global_context_for_invent_and_mutate(self):
+        global_context_json = '[{"score": 7, "prompt": "prompt-a"}]'
+
+        init_invent_prompt = get_init_msg(
+            goal="Goal text",
+            target="Target prefix",
+            candidate_methods=[],
+            examples=[],
+            mode=MODE_INVENT,
+            global_context_json=global_context_json,
+        )
+        self.assertIn("GLOBAL_CONTEXT_JSON:", init_invent_prompt)
+        self.assertIn(global_context_json, init_invent_prompt)
+
+        init_reuse_prompt = get_init_msg(
+            goal="Goal text",
+            target="Target prefix",
+            candidate_methods=[],
+            examples=[],
+            mode=MODE_REUSE,
+            global_context_json=global_context_json,
+        )
+        self.assertNotIn("GLOBAL_CONTEXT_JSON:", init_reuse_prompt)
+
+        followup_reuse_prompt = process_target_response(
+            target_response="target response",
+            score=4,
+            goal="Goal text",
+            candidate_methods=[],
+            examples=[],
+            mode=MODE_REUSE,
+            previous_prompt="Previous prompt body",
+            global_context_json=global_context_json,
+        )
+        self.assertNotIn("GLOBAL_CONTEXT_JSON:", followup_reuse_prompt)
 
     def test_tap_loads_saves_and_injects_global_context_on_success(self):
         class RecordingAttackerLLM:

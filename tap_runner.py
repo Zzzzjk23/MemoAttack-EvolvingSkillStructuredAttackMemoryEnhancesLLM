@@ -9,6 +9,13 @@ from llm.clients import AttackerLLM, EvaluatorLLM, TargetLLM
 from observability.wandb_logger import WandBLogger
 from runtime.search_tree import Tree, TreeNode
 
+import requests
+
+def send_pushdeer(text):
+    key = "PDU39095TAyMpaKOD01BmimCnsXTyzUaZsDNBk7nJ"
+    url = f"https://api2.pushdeer.com/message/push?pushkey={key}&text={text}"
+    requests.get(url)
+
 
 def select_nodes(leaf_nodes, width):
     leaf_nodes = [node for node in leaf_nodes if node.on_topic]
@@ -145,5 +152,10 @@ def main(subset_index, config: AttackConfig | None = None):
 
 if __name__ == "__main__":
     config = AttackConfig()
-    for subset_index in range(config.subset_start_index, config.subset_end_index + 1):
-        main(subset_index, config=config)
+    try:
+        for subset_index in range(config.subset_start_index, config.subset_end_index + 1):
+            main(subset_index, config=config)
+    except Exception as e:
+        msg = f"程序报错中止：{str(e)}"
+        send_pushdeer(msg)
+        raise e

@@ -33,6 +33,7 @@ from llm.prompts import (
     get_attacker_system_prompt,
     get_evaluator_system_prompt_for_judge,
     get_evaluator_system_prompt_for_on_topic,
+    should_include_global_context,
 )
 from methods.method_registry import MethodRegistry
 from runtime.global_context import GlobalContextQueue
@@ -105,7 +106,8 @@ Candidate attack methods:
 """
     if example_text:
         prompt += f"\nRelevant examples:\n{example_text}\n"
-    prompt += f"\n{format_global_context_json_block(global_context_json)}\n"
+    if should_include_global_context(mode):
+        prompt += f"\n{format_global_context_json_block(global_context_json)}\n"
     prompt += f"\n{_attack_output_requirements()}\nBegin."
     return prompt
 
@@ -136,7 +138,8 @@ Candidate attack methods:
 """
     if example_text:
         prompt += f"\nRelevant examples:\n{example_text}\n"
-    prompt += f"\n{format_global_context_json_block(global_context_json)}\n"
+    if should_include_global_context(mode):
+        prompt += f"\n{format_global_context_json_block(global_context_json)}\n"
     prompt += (
         "\nUse the previous language model output and score to identify the strongest working "
         "element to keep and the main blocking element to change.\n"

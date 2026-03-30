@@ -460,14 +460,14 @@ class GapRefactorTests(unittest.TestCase):
                 candidate_methods=None,
             ):
                 self.prompt_calls += 1
-                prompt = "partial success prompt" if self.prompt_calls == 1 else "success prompt"
+                prompt = "success prompt" if mode == "bootstrap" else "posterior success prompt"
                 return AttackPromptDraft(
                     improvement=f"improvement-{self.prompt_calls}",
                     prompt=prompt,
                     selected_method_names=(
                         [candidate_methods[0].method_name]
                         if candidate_methods
-                        else [attack_method.method_name]
+                        else []
                     ),
                     prompt_template="template",
                     attack_plan="plan",
@@ -482,11 +482,26 @@ class GapRefactorTests(unittest.TestCase):
                 return "Response: [[YES]]"
 
             def judge(self, judge_system_prompt, target_response):
-                if (target_response or "") == "success prompt":
+                if (target_response or "") in {"success prompt", "posterior success prompt"}:
                     return "Rating: [[10]]"
-                if (target_response or "") == "partial success prompt":
-                    return "Rating: [[4]]"
                 return "Rating: [[1]]"
+
+            def distill_method_proposal(self, *, record, existing_methods):
+                method_name = "Canonical Rewrite Method"
+                if existing_methods:
+                    method_name = existing_methods[0].method_name
+                return AttackMethodProposal(
+                    method_name=method_name,
+                    method_description="Distilled canonical rewrite",
+                    method_rationale="Derived from successful cold-start transitions",
+                    mutation_of=None,
+                    selected_parent_method_names=[],
+                    prompt_template="Use the successful rewrite pattern from the distilled record.",
+                    attack_plan="Apply the same successful rewrite transformation to the next prompt.",
+                    applicability="Cold-start derived posterior method",
+                    novelty_note="Reused canonical name for similar rewrites.",
+                    expected_mechanism="Transfer a successful before/after rewrite mechanism.",
+                )
 
         class MockTargetLLM:
             def __init__(self, model_name, config=None):
@@ -497,8 +512,10 @@ class GapRefactorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             registry_path = os.path.join(temp_dir, "posterior_evidence_global.pkl")
+            global_context_path = os.path.join(temp_dir, "global_context.json")
             config = AttackConfig(
                 persistence_path=registry_path,
+                bootstrap_success_target=1,
                 sparse_pool_threshold=0,
                 mode_reuse_bias=2.0,
                 mode_mutate_bias=0.1,
@@ -514,18 +531,20 @@ class GapRefactorTests(unittest.TestCase):
                 goal="Goal text",
                 target="Target prefix",
                 index=0,
-                max_depth=2,
-                branching_factor=2,
+                max_depth=1,
+                branching_factor=1,
                 width=1,
                 config=config,
             )
-            with patch("tap_runner.AttackerLLM", MockAttackerLLM), patch(
-                "tap_runner.EvaluatorLLM", MockEvaluatorLLM
-            ), patch("tap_runner.TargetLLM", MockTargetLLM):
+            with patch.object(AttackConfig, "resolve_global_context_path", return_value=global_context_path), patch(
+                "tap_runner.AttackerLLM", MockAttackerLLM
+            ), patch("tap_runner.EvaluatorLLM", MockEvaluatorLLM), patch(
+                "tap_runner.TargetLLM", MockTargetLLM
+            ):
                 success, request_count = tap(args, logger=None)
 
             self.assertTrue(success)
-            self.assertEqual(request_count, 2)
+            self.assertEqual(request_count, 1)
 
             loaded_registry = MethodRegistry(config=config, load_path=registry_path)
             pool = loaded_registry.get_pool()

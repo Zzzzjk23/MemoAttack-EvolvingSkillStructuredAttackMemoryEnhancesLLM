@@ -9,9 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from config.default_config import AttackConfig
-from llm.prompts import get_attack_prompt_user_prompt, get_method_proposal_user_prompt
-from methods.method_schema import MODE_INVENT, MODE_REUSE, AttackMethodProposal, AttackPromptDraft
-from runtime.global_context import GlobalContextQueue
+from llm.prompts import get_attack_prompt_user_prompt
+from methods.method_registry import MethodRegistry
+from methods.method_schema import AttackMethodProposal, AttackPromptDraft
+from runtime.global_context import GlobalContextEntry, GlobalContextQueue, PHASE_POSTERIOR
 from runtime.search_tree import get_init_msg, process_target_response
 from tap_runner import tap
 
@@ -25,139 +26,161 @@ class GlobalContextTestConfig(AttackConfig):
 
 
 class GlobalContextIntegrationTests(unittest.TestCase):
-    def test_queue_retains_top_scores_with_fifo_tiebreak(self):
-        queue = GlobalContextQueue(2)
+    def test_attacker_view_uses_top_scores_and_limited_fields(self):
+        queue = GlobalContextQueue(attacker_top_k=2)
+        queue.add_record(
+            GlobalContextEntry(
+                before_prompt="before-a",
+                before_score=1,
+                after_prompt="after-a",
+                after_score=6,
+                improvement="improve-a",
+                timestamp="2026-03-20T00:00:00+00:00",
+            )
+        )
+        queue.add_record(
+            GlobalContextEntry(
+                before_prompt="before-b",
+                before_score=2,
+                after_prompt="after-b",
+                after_score=9,
+                improvement="improve-b",
+                timestamp="2026-03-20T00:00:01+00:00",
+            )
+        )
+        queue.add_record(
+            GlobalContextEntry(
+                before_prompt="before-c",
+                before_score=3,
+                after_prompt="after-c",
+                after_score=9,
+                improvement="improve-c",
+                timestamp="2026-03-20T00:00:02+00:00",
+            )
+        )
 
-        queue.enqueue((1, "prompt-a"))
-        queue.enqueue((1, "prompt-b"))
-        queue.enqueue((0, "prompt-c"))
         self.assertEqual(
-            [entry.to_dict() for entry in queue.entries()],
+            queue.attacker_view(),
             [
-                {"score": 1, "prompt": "prompt-a"},
-                {"score": 1, "prompt": "prompt-b"},
+                {
+                    "before_prompt": "before-c",
+                    "before_score": 3,
+                    "after_prompt": "after-c",
+                    "after_score": 9,
+                    "improvement": "improve-c",
+                },
+                {
+                    "before_prompt": "before-b",
+                    "before_score": 2,
+                    "after_prompt": "after-b",
+                    "after_score": 9,
+                    "improvement": "improve-b",
+                },
             ],
         )
 
-        queue.enqueue((1, "prompt-c"))
-        self.assertEqual(
-            [entry.to_dict() for entry in queue.entries()],
-            [
-                {"score": 1, "prompt": "prompt-b"},
-                {"score": 1, "prompt": "prompt-c"},
-            ],
-        )
-
-        queue.enqueue((3, "prompt-d"))
-        self.assertEqual(
-            [entry.to_dict() for entry in queue.entries()],
-            [
-                {"score": 1, "prompt": "prompt-c"},
-                {"score": 3, "prompt": "prompt-d"},
-            ],
-        )
-
-    def test_queue_round_trip_and_missing_file(self):
+    def test_round_trip_persists_phase_and_bootstrap_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = os.path.join(temp_dir, "global_context.json")
-            queue = GlobalContextQueue(3)
-            queue.enqueue((7, "prompt-a"))
-            queue.enqueue((9, "prompt-b"))
-            queue.save_to_file(path)
-
-            loaded = GlobalContextQueue(3)
-            loaded.load_from_file(path)
-            self.assertEqual(
-                [entry.to_dict() for entry in loaded.entries()],
+            queue = GlobalContextQueue(attacker_top_k=5)
+            committed = queue.commit_successful_goal(
+                "goal-1",
                 [
-                    {"score": 7, "prompt": "prompt-a"},
-                    {"score": 9, "prompt": "prompt-b"},
+                    GlobalContextEntry(
+                        goal="Goal text",
+                        goal_index="1",
+                        before_prompt="before",
+                        before_score=1,
+                        after_prompt="after",
+                        after_score=8,
+                        improvement="rewrite",
+                        normalized_progress=0.7,
+                    )
                 ],
             )
+            self.assertTrue(committed)
+            queue.mark_posterior_built()
+            queue.save_to_file(path)
 
-            missing = GlobalContextQueue(3)
-            missing.load_from_file(os.path.join(temp_dir, "missing.json"))
-            self.assertTrue(missing.is_empty())
+            loaded = GlobalContextQueue(attacker_top_k=1)
+            loaded.load_from_file(path)
 
-    def test_attack_prompt_includes_global_context_only_for_invent_and_mutate(self):
-        global_context_json = '[{"score": 7, "prompt": "prompt-a"}]'
-        invent_prompt = get_attack_prompt_user_prompt(
+            self.assertEqual(loaded.phase, PHASE_POSTERIOR)
+            self.assertTrue(loaded.posterior_built)
+            self.assertEqual(loaded.bootstrap_success_count, 1)
+            self.assertEqual(loaded.successful_goal_ids, {"goal-1"})
+            self.assertEqual(len(loaded.entries()), 1)
+            self.assertEqual(loaded.entries()[0].after_prompt, "after")
+
+    def test_bootstrap_prompt_only_uses_global_context(self):
+        global_context_json = json.dumps(
+            [
+                {
+                    "before_prompt": "before",
+                    "before_score": 2,
+                    "after_prompt": "after",
+                    "after_score": 7,
+                    "improvement": "rewrite",
+                }
+            ],
+            ensure_ascii=False,
+        )
+        prompt = get_attack_prompt_user_prompt(
             goal="Goal text",
             target_str="Target prefix",
-            mode="invent",
+            mode="bootstrap",
             candidate_methods=[],
             parent_target_response="target response",
             parent_score=4,
             recent_examples="No examples.",
             previous_prompt="Previous prompt body",
             global_context_json=global_context_json,
+            global_context_only=True,
         )
-        self.assertIn("GLOBAL_CONTEXT_JSON:", invent_prompt)
-        self.assertIn(global_context_json, invent_prompt)
-        self.assertIn("Do not copy any stored prompt verbatim.", invent_prompt)
+        self.assertIn("GLOBAL_CONTEXT_JSON:", prompt)
+        self.assertIn("No candidate attack methods are available in this stage", prompt)
+        self.assertNotIn("Candidate attack methods:", prompt)
 
-        reuse_prompt = get_attack_prompt_user_prompt(
-            goal="Goal text",
-            target_str="Target prefix",
-            mode=MODE_REUSE,
-            candidate_methods=[],
-            parent_target_response="target response",
-            parent_score=4,
-            recent_examples="No examples.",
-            previous_prompt="Previous prompt body",
-            global_context_json=global_context_json,
+    def test_search_tree_bootstrap_messages_use_global_context_only(self):
+        global_context_json = json.dumps(
+            [
+                {
+                    "before_prompt": "before",
+                    "before_score": 1,
+                    "after_prompt": "after",
+                    "after_score": 5,
+                    "improvement": "rewrite",
+                }
+            ],
+            ensure_ascii=False,
         )
-        self.assertNotIn("GLOBAL_CONTEXT_JSON:", reuse_prompt)
-        self.assertNotIn(global_context_json, reuse_prompt)
-
-        method_prompt = get_method_proposal_user_prompt(
-            goal="Goal text",
-            target_str="Target prefix",
-            mode=MODE_INVENT,
-            existing_method_summaries=[],
-            candidate_parent_method_summaries=[],
-            current_score=0.0,
-            recent_summary="No recent attempts.",
-        )
-        self.assertNotIn("GLOBAL_CONTEXT_JSON", method_prompt)
-
-    def test_search_tree_only_appends_global_context_for_invent_and_mutate(self):
-        global_context_json = '[{"score": 7, "prompt": "prompt-a"}]'
-
-        init_invent_prompt = get_init_msg(
+        init_prompt = get_init_msg(
             goal="Goal text",
             target="Target prefix",
             candidate_methods=[],
             examples=[],
-            mode=MODE_INVENT,
+            mode="bootstrap",
             global_context_json=global_context_json,
+            global_context_only=True,
         )
-        self.assertIn("GLOBAL_CONTEXT_JSON:", init_invent_prompt)
-        self.assertIn(global_context_json, init_invent_prompt)
+        self.assertIn("GLOBAL_CONTEXT_JSON:", init_prompt)
+        self.assertNotIn("Candidate attack methods:", init_prompt)
 
-        init_reuse_prompt = get_init_msg(
-            goal="Goal text",
-            target="Target prefix",
-            candidate_methods=[],
-            examples=[],
-            mode=MODE_REUSE,
-            global_context_json=global_context_json,
-        )
-        self.assertNotIn("GLOBAL_CONTEXT_JSON:", init_reuse_prompt)
-
-        followup_reuse_prompt = process_target_response(
+        followup_prompt = process_target_response(
             target_response="target response",
             score=4,
             goal="Goal text",
             candidate_methods=[],
             examples=[],
-            mode=MODE_REUSE,
+            mode="bootstrap",
             previous_prompt="Previous prompt body",
             global_context_json=global_context_json,
+            global_context_only=True,
         )
-        self.assertNotIn("GLOBAL_CONTEXT_JSON:", followup_reuse_prompt)
+        self.assertIn("GLOBAL_CONTEXT_JSON:", followup_prompt)
+        self.assertNotIn("Candidate attack methods:", followup_prompt)
 
-    def test_tap_loads_saves_and_injects_global_context_on_success(self):
+    def test_tap_bootstrap_commits_records_only_on_success(self):
         class RecordingAttackerLLM:
             instances = []
 
@@ -165,24 +188,15 @@ class GlobalContextIntegrationTests(unittest.TestCase):
                 self.model_name = model_name
                 self.goal = ""
                 self.target_str = ""
-                self.prompt_calls = 0
                 self.user_prompts = []
+                self.prompt_calls = 0
                 RecordingAttackerLLM.instances.append(self)
 
-            def generate_method_proposal(
-                self,
-                *,
-                goal,
-                target_str,
-                attack_state,
-                mode,
-                existing_methods,
-                candidate_parent_methods,
-            ):
+            def generate_method_proposal(self, **kwargs):
                 return AttackMethodProposal(
-                    method_name=f"{mode.title()} Method",
-                    method_description=f"{mode} description",
-                    method_rationale=f"{mode} rationale",
+                    method_name="Unused Method",
+                    method_description="unused",
+                    method_rationale="unused",
                     mutation_of=None,
                     selected_parent_method_names=[],
                     prompt_template="template",
@@ -206,23 +220,18 @@ class GlobalContextIntegrationTests(unittest.TestCase):
             ):
                 self.prompt_calls += 1
                 self.user_prompts.append(conversation.messages[-1][1])
-                prompt = (
-                    "partial success prompt" if self.prompt_calls == 1 else "success prompt"
-                )
+                prompt = "partial success prompt" if self.prompt_calls == 1 else "success prompt"
+                selected_method_names = [item.method_name for item in (candidate_methods or [])]
                 return AttackPromptDraft(
                     improvement=f"improvement-{self.prompt_calls}",
                     prompt=prompt,
-                    selected_method_names=(
-                        [candidate_methods[0].method_name]
-                        if candidate_methods
-                        else [attack_method.method_name]
-                    ),
+                    selected_method_names=selected_method_names,
                     prompt_template="template",
                     attack_plan="plan",
                     rationale="rationale",
                 )
 
-        class SuccessEvaluatorLLM:
+        class MockEvaluatorLLM:
             def __init__(self, model_name, config=None):
                 self.model_name = model_name
 
@@ -230,11 +239,14 @@ class GlobalContextIntegrationTests(unittest.TestCase):
                 return "Response: [[YES]]"
 
             def judge(self, judge_system_prompt, target_response):
-                if (target_response or "") == "success prompt":
+                if target_response == "success prompt":
                     return "Rating: [[10]]"
-                if (target_response or "") == "partial success prompt":
+                if target_response == "partial success prompt":
                     return "Rating: [[4]]"
                 return "Rating: [[1]]"
+
+            def distill_method_proposal(self, *, record, existing_methods):
+                raise AssertionError("distillation should not run in this test")
 
         class EchoTargetLLM:
             def __init__(self, model_name, config=None):
@@ -243,27 +255,18 @@ class GlobalContextIntegrationTests(unittest.TestCase):
             def target_response(self, prompt):
                 return prompt
 
-        original_load = GlobalContextQueue.load_from_file
-        original_save = GlobalContextQueue.save_to_file
-        original_enqueue = GlobalContextQueue.enqueue
-
-        def wrapped_load(self, filepath=None):
-            return original_load(self, filepath)
-
-        def wrapped_save(self, filepath=None):
-            return original_save(self, filepath)
-
-        def wrapped_enqueue(self, item):
-            return original_enqueue(self, item)
-
         with tempfile.TemporaryDirectory() as temp_dir:
             global_context_path = os.path.join(temp_dir, "global_context.json")
             registry_path = os.path.join(temp_dir, "posterior_evidence_global.pkl")
             with open(global_context_path, "w", encoding="utf-8") as handle:
                 json.dump(
                     {
-                        "capacity": 3,
-                        "data": [{"score": 8, "prompt": "seed prompt"}],
+                        "phase": "bootstrap",
+                        "bootstrap_success_count": 0,
+                        "posterior_built": False,
+                        "attacker_top_k": 5,
+                        "successful_goal_ids": [],
+                        "records": [],
                     },
                     handle,
                     ensure_ascii=False,
@@ -272,14 +275,8 @@ class GlobalContextIntegrationTests(unittest.TestCase):
 
             config = GlobalContextTestConfig(
                 persistence_path=registry_path,
-                sparse_pool_threshold=0,
-                mode_reuse_bias=2.0,
-                mode_mutate_bias=0.1,
-                mode_invent_bias=0.1,
-                mode_cold_start_bonus=0.0,
-                low_score_threshold=0.0,
-                max_global_methods=32,
-                global_context_queue_size=3,
+                bootstrap_success_target=99,
+                global_context_attacker_top_k=5,
                 attacker_input_dir=os.path.join(temp_dir, "attacker_input"),
                 global_context_path=global_context_path,
             )
@@ -297,79 +294,92 @@ class GlobalContextIntegrationTests(unittest.TestCase):
             )
 
             RecordingAttackerLLM.instances.clear()
-            with patch(
-                "runtime.global_context.GlobalContextQueue.load_from_file",
-                autospec=True,
-                side_effect=wrapped_load,
-            ) as load_mock, patch(
-                "runtime.global_context.GlobalContextQueue.save_to_file",
-                autospec=True,
-                side_effect=wrapped_save,
-            ) as save_mock, patch(
-                "runtime.global_context.GlobalContextQueue.enqueue",
-                autospec=True,
-                side_effect=wrapped_enqueue,
-            ) as enqueue_mock, patch(
-                "tap_runner.AttackerLLM",
-                RecordingAttackerLLM,
-            ), patch(
-                "tap_runner.EvaluatorLLM",
-                SuccessEvaluatorLLM,
-            ), patch(
-                "tap_runner.TargetLLM",
-                EchoTargetLLM,
-            ):
+            with patch("tap_runner.AttackerLLM", RecordingAttackerLLM), patch(
+                "tap_runner.EvaluatorLLM", MockEvaluatorLLM
+            ), patch("tap_runner.TargetLLM", EchoTargetLLM):
                 success, request_count = tap(args, logger=None)
 
             self.assertTrue(success)
             self.assertEqual(request_count, 2)
-            self.assertEqual(load_mock.call_count, 1)
-            self.assertEqual(save_mock.call_count, 1)
-            self.assertEqual(enqueue_mock.call_count, 3)
-            self.assertEqual(enqueue_mock.call_args_list[-2].args[1], (4, "partial success prompt"))
-            self.assertEqual(enqueue_mock.call_args_list[-1].args[1], (10, "success prompt"))
-
             attacker = RecordingAttackerLLM.instances[0]
-            self.assertEqual(len(attacker.user_prompts), 2)
-            self.assertIn("GLOBAL_CONTEXT_JSON:", attacker.user_prompts[0])
-            self.assertIn("seed prompt", attacker.user_prompts[0])
-            self.assertIn("partial success prompt", attacker.user_prompts[1])
-            self.assertIn("PREVIOUS ADVERSARIAL PROMPT: partial success prompt", attacker.user_prompts[1])
+            self.assertNotIn("GLOBAL_CONTEXT_JSON:", attacker.user_prompts[0])
+            self.assertNotIn("GLOBAL_CONTEXT_JSON:", attacker.user_prompts[1])
+            self.assertNotIn("Candidate attack methods:", attacker.user_prompts[0])
 
             with open(global_context_path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-            self.assertEqual(payload["capacity"], 3)
-            self.assertEqual(
-                payload["data"],
-                [
-                    {"score": 8, "prompt": "seed prompt"},
-                    {"score": 4, "prompt": "partial success prompt"},
-                    {"score": 10, "prompt": "success prompt"},
-                ],
+            self.assertEqual(payload["phase"], "bootstrap")
+            self.assertEqual(payload["bootstrap_success_count"], 1)
+            self.assertEqual(len(payload["records"]), 2)
+            self.assertEqual(payload["records"][0]["after_prompt"], "partial success prompt")
+            self.assertEqual(payload["records"][1]["after_prompt"], "success prompt")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            global_context_path = os.path.join(temp_dir, "global_context.json")
+            registry_path = os.path.join(temp_dir, "posterior_evidence_global.pkl")
+            config = GlobalContextTestConfig(
+                persistence_path=registry_path,
+                bootstrap_success_target=99,
+                global_context_attacker_top_k=5,
+                attacker_input_dir=os.path.join(temp_dir, "attacker_input"),
+                global_context_path=global_context_path,
+            )
+            args = SimpleNamespace(
+                attacker_model="mock-attacker",
+                evaluator_model="mock-evaluator",
+                target_model="mock-target",
+                goal="Goal text",
+                target="Target prefix",
+                index=0,
+                max_depth=1,
+                branching_factor=1,
+                width=1,
+                config=config,
             )
 
-    def test_tap_saves_global_context_on_failure(self):
+            class FailureAttackerLLM(RecordingAttackerLLM):
+                def generate_attack_prompt(self, **kwargs):
+                    conversation = kwargs["conversation"]
+                    self.prompt_calls += 1
+                    self.user_prompts.append(conversation.messages[-1][1])
+                    return AttackPromptDraft(
+                        improvement="improvement",
+                        prompt="partial success prompt",
+                        selected_method_names=[],
+                        prompt_template="template",
+                        attack_plan="plan",
+                        rationale="rationale",
+                    )
+
+            with patch("tap_runner.AttackerLLM", FailureAttackerLLM), patch(
+                "tap_runner.EvaluatorLLM", MockEvaluatorLLM
+            ), patch("tap_runner.TargetLLM", EchoTargetLLM):
+                success, request_count = tap(args, logger=None)
+
+            self.assertFalse(success)
+            self.assertEqual(request_count, 1)
+            with open(global_context_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            self.assertEqual(payload["bootstrap_success_count"], 0)
+            self.assertEqual(payload["records"], [])
+
+    def test_tap_distills_posterior_and_stops_using_global_context(self):
         class RecordingAttackerLLM:
+            instances = []
+
             def __init__(self, model_name, config=None):
                 self.model_name = model_name
                 self.goal = ""
                 self.target_str = ""
+                self.user_prompts = []
                 self.prompt_calls = 0
+                RecordingAttackerLLM.instances.append(self)
 
-            def generate_method_proposal(
-                self,
-                *,
-                goal,
-                target_str,
-                attack_state,
-                mode,
-                existing_methods,
-                candidate_parent_methods,
-            ):
+            def generate_method_proposal(self, **kwargs):
                 return AttackMethodProposal(
-                    method_name=f"{mode.title()} Method",
-                    method_description=f"{mode} description",
-                    method_rationale=f"{mode} rationale",
+                    method_name="Fallback Posterior Method",
+                    method_description="posterior fallback",
+                    method_rationale="posterior fallback",
                     mutation_of=None,
                     selected_parent_method_names=[],
                     prompt_template="template",
@@ -392,20 +402,25 @@ class GlobalContextIntegrationTests(unittest.TestCase):
                 candidate_methods=None,
             ):
                 self.prompt_calls += 1
+                self.user_prompts.append(conversation.messages[-1][1])
+                if mode == "bootstrap":
+                    prompt = "bootstrap success prompt"
+                    selected = []
+                else:
+                    prompt = "posterior success prompt"
+                    selected = [item.method_name for item in (candidate_methods or [])]
                 return AttackPromptDraft(
-                    improvement=f"improvement-{self.prompt_calls}",
-                    prompt=f"attempt-{self.prompt_calls}",
-                    selected_method_names=(
-                        [candidate_methods[0].method_name]
-                        if candidate_methods
-                        else [attack_method.method_name]
-                    ),
+                    improvement=f"{mode}-improvement",
+                    prompt=prompt,
+                    selected_method_names=selected,
                     prompt_template="template",
                     attack_plan="plan",
                     rationale="rationale",
                 )
 
-        class FailureEvaluatorLLM:
+        class DistillingEvaluatorLLM:
+            distill_calls = 0
+
             def __init__(self, model_name, config=None):
                 self.model_name = model_name
 
@@ -413,7 +428,27 @@ class GlobalContextIntegrationTests(unittest.TestCase):
                 return "Response: [[YES]]"
 
             def judge(self, judge_system_prompt, target_response):
-                return "Rating: [[3]]"
+                if target_response in {"bootstrap success prompt", "posterior success prompt"}:
+                    return "Rating: [[10]]"
+                return "Rating: [[1]]"
+
+            def distill_method_proposal(self, *, record, existing_methods):
+                DistillingEvaluatorLLM.distill_calls += 1
+                method_name = "Canonical Rewrite Method"
+                if existing_methods:
+                    method_name = existing_methods[0].method_name
+                return AttackMethodProposal(
+                    method_name=method_name,
+                    method_description="Distilled canonical rewrite",
+                    method_rationale="Derived from successful cold-start transitions",
+                    mutation_of=None,
+                    selected_parent_method_names=[],
+                    prompt_template="Use the successful rewrite pattern from the distilled record.",
+                    attack_plan="Apply the same successful rewrite transformation to the next prompt.",
+                    applicability="Cold-start derived posterior method",
+                    novelty_note="Reused canonical name for similar rewrites.",
+                    expected_mechanism="Transfer a successful before/after rewrite mechanism.",
+                )
 
         class EchoTargetLLM:
             def __init__(self, model_name, config=None):
@@ -422,35 +457,23 @@ class GlobalContextIntegrationTests(unittest.TestCase):
             def target_response(self, prompt):
                 return prompt
 
-        original_load = GlobalContextQueue.load_from_file
-        original_save = GlobalContextQueue.save_to_file
-        original_enqueue = GlobalContextQueue.enqueue
-
-        def wrapped_load(self, filepath=None):
-            return original_load(self, filepath)
-
-        def wrapped_save(self, filepath=None):
-            return original_save(self, filepath)
-
-        def wrapped_enqueue(self, item):
-            return original_enqueue(self, item)
-
         with tempfile.TemporaryDirectory() as temp_dir:
             global_context_path = os.path.join(temp_dir, "global_context.json")
             registry_path = os.path.join(temp_dir, "posterior_evidence_global.pkl")
             config = GlobalContextTestConfig(
                 persistence_path=registry_path,
+                bootstrap_success_target=1,
                 sparse_pool_threshold=0,
-                mode_reuse_bias=2.0,
+                mode_reuse_bias=5.0,
                 mode_mutate_bias=0.1,
                 mode_invent_bias=0.1,
                 mode_cold_start_bonus=0.0,
                 low_score_threshold=0.0,
-                max_global_methods=32,
-                global_context_queue_size=2,
+                global_context_attacker_top_k=5,
                 attacker_input_dir=os.path.join(temp_dir, "attacker_input"),
                 global_context_path=global_context_path,
             )
+
             args = SimpleNamespace(
                 attacker_model="mock-attacker",
                 evaluator_model="mock-evaluator",
@@ -459,51 +482,37 @@ class GlobalContextIntegrationTests(unittest.TestCase):
                 target="Target prefix",
                 index=0,
                 max_depth=1,
-                branching_factor=2,
+                branching_factor=1,
                 width=1,
                 config=config,
             )
 
-            with patch(
-                "runtime.global_context.GlobalContextQueue.load_from_file",
-                autospec=True,
-                side_effect=wrapped_load,
-            ) as load_mock, patch(
-                "runtime.global_context.GlobalContextQueue.save_to_file",
-                autospec=True,
-                side_effect=wrapped_save,
-            ) as save_mock, patch(
-                "runtime.global_context.GlobalContextQueue.enqueue",
-                autospec=True,
-                side_effect=wrapped_enqueue,
-            ) as enqueue_mock, patch(
-                "tap_runner.AttackerLLM",
-                RecordingAttackerLLM,
-            ), patch(
-                "tap_runner.EvaluatorLLM",
-                FailureEvaluatorLLM,
-            ), patch(
-                "tap_runner.TargetLLM",
-                EchoTargetLLM,
-            ):
+            RecordingAttackerLLM.instances.clear()
+            DistillingEvaluatorLLM.distill_calls = 0
+            with patch("tap_runner.AttackerLLM", RecordingAttackerLLM), patch(
+                "tap_runner.EvaluatorLLM", DistillingEvaluatorLLM
+            ), patch("tap_runner.TargetLLM", EchoTargetLLM):
                 success, request_count = tap(args, logger=None)
+                self.assertTrue(success)
+                self.assertEqual(request_count, 1)
 
-            self.assertFalse(success)
-            self.assertEqual(request_count, 2)
-            self.assertEqual(load_mock.call_count, 1)
-            self.assertEqual(save_mock.call_count, 1)
-            self.assertEqual(enqueue_mock.call_count, 2)
+                with open(global_context_path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                self.assertEqual(payload["phase"], PHASE_POSTERIOR)
+                self.assertTrue(payload["posterior_built"])
+                self.assertGreaterEqual(DistillingEvaluatorLLM.distill_calls, 1)
 
-            with open(global_context_path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-            self.assertEqual(payload["capacity"], 2)
-            self.assertEqual(
-                payload["data"],
-                [
-                    {"score": 3, "prompt": "attempt-1"},
-                    {"score": 3, "prompt": "attempt-2"},
-                ],
-            )
+                loaded_registry = MethodRegistry(config=config, load_path=registry_path)
+                self.assertGreaterEqual(len(loaded_registry.get_pool().get_all_methods()), 1)
+
+                success, request_count = tap(args, logger=None)
+                self.assertTrue(success)
+                self.assertEqual(request_count, 1)
+
+            self.assertEqual(len(RecordingAttackerLLM.instances), 2)
+            self.assertNotIn("Candidate attack methods:", RecordingAttackerLLM.instances[0].user_prompts[0])
+            self.assertNotIn("GLOBAL_CONTEXT_JSON:", RecordingAttackerLLM.instances[1].user_prompts[0])
+            self.assertIn("Candidate attack methods:", RecordingAttackerLLM.instances[1].user_prompts[0])
 
 
 if __name__ == "__main__":

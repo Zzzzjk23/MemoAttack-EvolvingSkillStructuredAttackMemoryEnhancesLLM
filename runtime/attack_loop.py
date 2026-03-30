@@ -13,8 +13,12 @@ from methods.method_schema import (
     AttackAttemptResult,
 )
 from methods.mutation import mutate_method
+from runtime.global_context import GlobalContextEntry
 from runtime.state_tracker import append_attempt_to_history, build_attack_state
 from scoring.progress_metric import compute_normalized_gap_improvement
+
+
+BOOTSTRAP_MODE = "bootstrap"
 
 
 def _serialize_thompson_samples(samples):
@@ -154,7 +158,161 @@ def _materialize_method(tree, state, pool, mode: str):
     return MODE_INVENT, method, [method], debug
 
 
-def execute_attack_step(tree, parent_node):
+def _evaluate_draft(tree, state, draft):
+    on_topic = tree.evaluate_on_topic(draft.prompt)
+    target_response = tree.get_target_response(draft.prompt) if on_topic else None
+    raw_score = tree.evaluate_outside_score(target_response) if on_topic else 0
+    normalized_score = tree.normalize_score(raw_score)
+    normalized_progress = compute_normalized_gap_improvement(
+        prev_score=state.current_score,
+        new_score=normalized_score,
+        max_score=tree.config.max_score,
+        epsilon=tree.config.epsilon,
+    )
+    made_progress = normalized_progress >= tree.config.progress_threshold
+    final_success = raw_score >= tree.config.final_success_score_threshold
+    return {
+        "on_topic": on_topic,
+        "target_response": target_response,
+        "raw_score": raw_score,
+        "normalized_score": normalized_score,
+        "normalized_progress": normalized_progress,
+        "made_progress": made_progress,
+        "final_success": final_success,
+    }
+
+
+def _maybe_queue_bootstrap_record(tree, parent_node, draft, evaluation) -> None:
+    progress_threshold = tree.config.resolve_global_context_progress_threshold()
+    if evaluation["raw_score"] <= getattr(parent_node, "outside_score", 0):
+        return
+    if evaluation["normalized_progress"] < progress_threshold:
+        return
+    tree.queue_bootstrap_record(
+        GlobalContextEntry(
+            goal=tree.goal,
+            goal_index=str(tree.index),
+            before_prompt=getattr(parent_node, "prompt", tree.goal),
+            before_score=int(getattr(parent_node, "outside_score", 0) or 0),
+            after_prompt=draft.prompt,
+            after_score=int(evaluation["raw_score"]),
+            improvement=draft.improvement,
+            normalized_progress=evaluation["normalized_progress"],
+            target_response=evaluation["target_response"] or "",
+            depth=getattr(parent_node, "depth", 0) + 1,
+            request_count=tree.request_count,
+            metadata={
+                "parent_node_id": getattr(parent_node, "id", None),
+            },
+        )
+    )
+
+
+def _build_attempt_result(
+    *,
+    state,
+    draft,
+    mode,
+    raw_score,
+    normalized_score,
+    normalized_progress,
+    made_progress,
+    final_success,
+    target_response,
+    metadata,
+    used_method_id: str = "",
+):
+    return AttackAttemptResult(
+        used_method_id=used_method_id,
+        mode=mode,
+        prev_score=state.current_score,
+        new_score=normalized_score,
+        normalized_progress=normalized_progress,
+        made_progress=made_progress,
+        final_success=final_success,
+        response={
+            "improvement": draft.improvement,
+            "prompt": draft.prompt,
+            "selected_method_names": draft.selected_method_names,
+            "prompt_template": draft.prompt_template,
+            "attack_plan": draft.attack_plan,
+            "rationale": draft.rationale,
+        },
+        target_response=target_response,
+        attack_prompt=draft.prompt,
+        raw_prev_score=state.current_raw_score,
+        raw_new_score=raw_score,
+        metadata=metadata,
+    )
+
+
+def _execute_bootstrap_attack_step(tree, parent_node):
+    state = build_attack_state(tree, parent_node)
+    mode = BOOTSTRAP_MODE
+    conversation = tree.build_attack_conversation(
+        parent_node=parent_node,
+        candidate_methods=[],
+        mode=mode,
+        examples=[],
+    )
+    draft = tree.attacker_llm.generate_attack_prompt(
+        conversation=conversation,
+        goal=tree.goal,
+        target_str=tree.target,
+        attack_state=state,
+        attack_method=None,
+        mode=mode,
+        examples=[],
+        candidate_methods=[],
+    )
+    conversation.append_message(
+        conversation.roles[1],
+        {
+            "improvement": draft.improvement,
+            "prompt": draft.prompt,
+            "selected_method_names": draft.selected_method_names,
+            "prompt_template": draft.prompt_template,
+            "attack_plan": draft.attack_plan,
+            "rationale": draft.rationale,
+        },
+    )
+
+    evaluation = _evaluate_draft(tree, state, draft)
+    _maybe_queue_bootstrap_record(tree, parent_node, draft, evaluation)
+    attempt_result = _build_attempt_result(
+        state=state,
+        draft=draft,
+        mode=mode,
+        raw_score=evaluation["raw_score"],
+        normalized_score=evaluation["normalized_score"],
+        normalized_progress=evaluation["normalized_progress"],
+        made_progress=evaluation["made_progress"],
+        final_success=evaluation["final_success"],
+        target_response=evaluation["target_response"],
+        metadata={"bootstrap": True},
+        used_method_id="",
+    )
+
+    child_node = tree.create_child_node(parent_node=parent_node)
+    child_node.populate_from_attempt(
+        prompt=draft.prompt,
+        improvement=draft.improvement,
+        conv=conversation,
+        attack_method=None,
+        selected_methods=[],
+        candidate_methods=[],
+        mode=mode,
+        attempt_result=attempt_result,
+        on_topic=evaluation["on_topic"],
+        target_response=evaluation["target_response"],
+        outside_score=evaluation["raw_score"],
+        history=append_attempt_to_history(parent_node, attempt_result),
+    )
+    tree.dump_attacker_input(child_node)
+    return child_node
+
+
+def _execute_posterior_attack_step(tree, parent_node):
     state = build_attack_state(tree, parent_node)
     pool = tree.method_registry.get_pool()
     mode = select_mode(state, pool, tree.config, rng=tree.random)
@@ -198,42 +356,17 @@ def execute_attack_step(tree, parent_node):
         draft.selected_method_names,
     )
     primary_selected_method = selected_methods[0]
-
-    on_topic = tree.evaluate_on_topic(draft.prompt)
-    target_response = tree.get_target_response(draft.prompt) if on_topic else None
-    raw_score = tree.evaluate_outside_score(target_response) if on_topic else 0
-    tree.global_context.enqueue((raw_score, draft.prompt))
-    normalized_score = tree.normalize_score(raw_score)
-    prev_score = state.current_score
-    normalized_progress = compute_normalized_gap_improvement(
-        prev_score=prev_score,
-        new_score=normalized_score,
-        max_score=tree.config.max_score,
-        epsilon=tree.config.epsilon,
-    )
-    made_progress = normalized_progress >= tree.config.progress_threshold
-    final_success = raw_score >= tree.config.final_success_score_threshold
-
-    attempt_result = AttackAttemptResult(
-        used_method_id=primary_selected_method.method_id,
+    evaluation = _evaluate_draft(tree, state, draft)
+    attempt_result = _build_attempt_result(
+        state=state,
+        draft=draft,
         mode=mode,
-        prev_score=prev_score,
-        new_score=normalized_score,
-        normalized_progress=normalized_progress,
-        made_progress=made_progress,
-        final_success=final_success,
-        response={
-            "improvement": draft.improvement,
-            "prompt": draft.prompt,
-            "selected_method_names": draft.selected_method_names,
-            "prompt_template": draft.prompt_template,
-            "attack_plan": draft.attack_plan,
-            "rationale": draft.rationale,
-        },
-        target_response=target_response,
-        attack_prompt=draft.prompt,
-        raw_prev_score=state.current_raw_score,
-        raw_new_score=raw_score,
+        raw_score=evaluation["raw_score"],
+        normalized_score=evaluation["normalized_score"],
+        normalized_progress=evaluation["normalized_progress"],
+        made_progress=evaluation["made_progress"],
+        final_success=evaluation["final_success"],
+        target_response=evaluation["target_response"],
         metadata={
             "mode_debug": debug,
             "method_name": primary_selected_method.method_name,
@@ -245,6 +378,7 @@ def execute_attack_step(tree, parent_node):
             "materialized_method_id": method.method_id,
             "materialized_method_name": method.method_name,
         },
+        used_method_id=primary_selected_method.method_id,
     )
 
     for selected_method in selected_methods:
@@ -254,7 +388,7 @@ def execute_attack_step(tree, parent_node):
             prompt_text=tree.goal,
             before_prompt=getattr(parent_node, "prompt", tree.goal),
             after_prompt=draft.prompt,
-            target_response=target_response or "",
+            target_response=evaluation["target_response"] or "",
         )
 
     child_node = tree.create_child_node(parent_node=parent_node)
@@ -267,10 +401,16 @@ def execute_attack_step(tree, parent_node):
         candidate_methods=candidate_methods,
         mode=mode,
         attempt_result=attempt_result,
-        on_topic=on_topic,
-        target_response=target_response,
-        outside_score=raw_score,
+        on_topic=evaluation["on_topic"],
+        target_response=evaluation["target_response"],
+        outside_score=evaluation["raw_score"],
         history=append_attempt_to_history(parent_node, attempt_result),
     )
     tree.dump_attacker_input(child_node)
     return child_node
+
+
+def execute_attack_step(tree, parent_node):
+    if tree.is_bootstrap_phase():
+        return _execute_bootstrap_attack_step(tree, parent_node)
+    return _execute_posterior_attack_step(tree, parent_node)

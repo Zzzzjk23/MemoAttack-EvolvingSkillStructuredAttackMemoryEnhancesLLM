@@ -80,16 +80,14 @@ def tap(args, logger=None):
                     print(f"{tap_tree.goal} 越狱成功，共生成{tap_tree.request_count}个请求")
                     if logger:
                         logger.log_success(tap_tree.goal, tap_tree.request_count, depth)
-                    tap_tree.save_global_context()
-                    tap_tree.method_registry.save()
+                    tap_tree.finalize_goal(success=True)
                     return True, tap_tree.request_count
 
     if logger:
         logger.log_success(tap_tree.goal, tap_tree.request_count, max_depth, success=False)
 
     print(f"{tap_tree.goal} 越狱失败，共生成{tap_tree.request_count}个请求")
-    tap_tree.save_global_context()
-    tap_tree.method_registry.save()
+    tap_tree.finalize_goal(success=False)
     return False, tap_tree.request_count
 
 

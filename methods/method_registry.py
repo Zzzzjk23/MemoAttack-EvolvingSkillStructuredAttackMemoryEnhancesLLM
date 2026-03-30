@@ -180,12 +180,13 @@ class MethodRegistry:
         self,
         config: Optional[AttackConfig] = None,
         load_path: Optional[str] = None,
+        load_existing: bool = True,
     ):
         self.config = config or AttackConfig()
         self.path = load_path or self.config.persistence_path
         if load_path:
             self.path = load_path
-        loaded = self._load_existing(self.path)
+        loaded = self._load_existing(self.path) if load_existing else None
         if loaded is not None:
             self.pool = loaded.pool
             self.config = loaded.config

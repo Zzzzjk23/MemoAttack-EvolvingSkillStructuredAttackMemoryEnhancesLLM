@@ -27,7 +27,7 @@ def build_attack_state(tree, node) -> AttackState:
         goal_embedding=goal_embedding,
         prompt_embedding=prompt_embedding,
         global_context_json=(
-            global_context.convert_to_json() if global_context is not None else "[]"
+            tree.get_attacker_global_context_json() if global_context is not None else "[]"
         ),
     )
 

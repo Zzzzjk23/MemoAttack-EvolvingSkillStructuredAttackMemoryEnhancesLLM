@@ -5,7 +5,6 @@ from typing import List, Optional
 
 from bandit.thompson_sampling import (
     ThompsonSample,
-    select_method_via_thompson,
     select_methods_via_thompson,
 )
 from config.default_config import AttackConfig
@@ -30,20 +29,6 @@ def select_existing_methods(
     )
 
 
-def select_existing_method(
-    context: AttackState,
-    method_pool: MethodPool,
-    config: AttackConfig,
-    rng: Optional[random.Random] = None,
-) -> Optional[ThompsonSample]:
-    return select_method_via_thompson(
-        state=context,
-        pool=method_pool,
-        config=config,
-        rng=rng,
-    )
-
-
 def select_parent_methods_for_mutation(
     context: AttackState,
     method_pool: MethodPool,
@@ -57,18 +42,4 @@ def select_parent_methods_for_mutation(
         config=config,
         rng=rng,
         limit=limit,
-    )
-
-
-def select_parent_method_for_mutation(
-    context: AttackState,
-    method_pool: MethodPool,
-    config: AttackConfig,
-    rng: Optional[random.Random] = None,
-) -> Optional[ThompsonSample]:
-    return select_existing_method(
-        context=context,
-        method_pool=method_pool,
-        config=config,
-        rng=rng,
     )

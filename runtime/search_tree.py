@@ -13,11 +13,6 @@ try:  # pragma: no cover - optional dependency
 except ImportError:  # pragma: no cover - optional dependency
     GoogleTranslator = None
 
-try:  # pragma: no cover - optional dependency
-    from fastchat.model import get_conversation_template as _fastchat_get_conversation_template
-except ImportError:  # pragma: no cover - optional dependency
-    _fastchat_get_conversation_template = None
-
 from config.default_config import AttackConfig
 from embeddings.prompt_embedding import embed_prompt
 from llm.clients import (
@@ -51,12 +46,6 @@ class SimpleConversation:
 
     def append_message(self, role: str, content: Any) -> None:
         self.messages.append((role, content))
-
-
-def get_conversation_template(model_name: str):
-    if _fastchat_get_conversation_template is not None:
-        return _fastchat_get_conversation_template(model_name)
-    return SimpleConversation()
 
 
 def _format_examples(examples) -> str:
@@ -277,16 +266,6 @@ class TreeNode:
         self.normalized_score = self.tree.normalize_score(outside_score)
         self.prompt_ebd = embed_prompt(self.prompt) if self.prompt else None
 
-    def get_path(self) -> List["TreeNode"]:
-        path = []
-        node = self
-        while node is not None:
-            path.append(node)
-            node = node.parent
-        path.reverse()
-        return path
-
-
 class Tree:
     def __init__(
         self,
@@ -385,13 +364,21 @@ class Tree:
             self.method_registry.save()
 
     def evaluate_on_topic(self, prompt: str) -> bool:
-        # Disabled evaluator-based on-topic checking for testing.
-        # response = self.evaluator_llm.out_of_target(
-        #     self.evaluator_system_prompt_on_topic,
-        #     prompt,
-        # )
-        # match = re.search(r"\[\[\s*yes\s*\]\]", response.lower())
-        # return bool(match)
+        try:
+            response = self.evaluator_llm.out_of_target(
+                self.evaluator_system_prompt_on_topic,
+                prompt,
+            )
+        except Exception:
+            # Fail open so transient evaluator issues do not stall the search loop.
+            return True
+
+        normalized_response = str(response).lower()
+        if re.search(r"\[\[\s*yes\s*\]\]", normalized_response):
+            return True
+        if re.search(r"\[\[\s*no\s*\]\]", normalized_response):
+            return False
+        # Keep the pipeline running if the evaluator returns an unexpected format.
         return True
 
     def get_target_response(self, prompt: str) -> str:
@@ -430,7 +417,7 @@ class Tree:
         global_context_only = self.is_bootstrap_phase()
         global_context_json = self.get_attacker_global_context_json() if global_context_only else "[]"
         if parent_node.conv is None:
-            conv = get_conversation_template(self.attacker_llm.model_name)
+            conv = SimpleConversation()
             conv.set_system_message(self.attacker_system_prompt)
             conv.messages = []
             conv.append_message(

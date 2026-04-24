@@ -32,7 +32,7 @@ def select_mode(
     rng: random.Random | None = None,
 ) -> str:
     rng = rng or random.Random()
-    if not method_pool.has_active_methods():
+    if not method_pool.has_selectable_methods():
         return MODE_INVENT
 
     scores = {
@@ -41,8 +41,13 @@ def select_mode(
         MODE_INVENT: config.mode_invent_bias,
     }
     active_methods = method_pool.get_active_methods()
+    retired_methods = method_pool.get_retired_methods()
     if len(active_methods) <= config.sparse_pool_threshold:
-        scores[MODE_INVENT] += config.mode_cold_start_bonus
+        cold_start_bonus = config.mode_cold_start_bonus
+        if retired_methods:
+            cold_start_bonus *= 0.5
+            scores[MODE_REUSE] += config.mode_cold_start_bonus
+        scores[MODE_INVENT] += cold_start_bonus
     if context.current_score <= config.low_score_threshold:
         scores[MODE_INVENT] += config.mode_low_score_invent_bonus
     if context.recent_mode:

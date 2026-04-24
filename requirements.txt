@@ -1,0 +1,9 @@
+# Core runtime dependencies
+numpy>=1.24
+pandas>=2.0
+openai>=1.30.0
+deep-translator>=1.11.4
+
+# Recommended for semantic prompt embeddings.
+# The codebase can fall back to a deterministic local embedding if omitted.
+sentence-transformers>=2.2.2

@@ -8,21 +8,23 @@ __pycache__/
 venv/
 env/
 
-# wandb 与 attacker_input（不纳入版本控制）
-wandb/
+# Local outputs
 attacker_input/
+goal_logs/
+*.log
 
-# 数据文件（不纳入版本控制）
-posterior_evidence_v2.pkl
+# Data artifacts
+AdvBench_subset_*.csv
+result.csv
+results_*.csv
+global_context.json
+posterior_evidence_global.pkl
 
-# 环境变量（可能含密钥）
+# Environment variables
 .env
 .env.local
 
-# 日志
-*.log
-
-# 系统文件
+# System files
 .DS_Store
 Thumbs.db
 
@@ -31,9 +33,4 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-
-# AdvBench 与结果数据（不纳入版本控制）
-AdvBench_subset_*.csv
-results_*.csv
-global_context.json
-posterior_evidence_global.pkl
+wandb/

@@ -8,7 +8,7 @@ from bandit.contextual_bandit import build_context_features, compute_context_bon
 from bandit.posterior import sample_progress, sample_success
 from config.default_config import AttackConfig
 from methods.method_registry import MethodPool
-from methods.method_schema import AttackMethod, AttackState
+from methods.method_schema import RETIRED, AttackMethod, AttackState
 
 
 @dataclass
@@ -36,6 +36,8 @@ def sample_method_utility(
         + config.thompson_success_weight * sampled_success
         + context_bonus
     )
+    if method.status == RETIRED:
+        utility -= config.retired_thompson_penalty
     return ThompsonSample(
         method=method,
         utility=utility,
@@ -69,7 +71,7 @@ def select_methods_via_thompson(
     limit: int = 1,
 ) -> List[ThompsonSample]:
     rng = rng or random.Random()
-    methods: List[AttackMethod] = pool.get_active_methods()
+    methods: List[AttackMethod] = pool.get_methods_for_reuse(rng=rng)
     if not methods:
         return []
     samples = [

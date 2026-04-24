@@ -1,20 +1,17 @@
 from __future__ import annotations
 
+import ast
 import csv
-import os
+from pathlib import Path
 from types import SimpleNamespace
 
 from config.default_config import AttackConfig
 from llm.clients import AttackerLLM, EvaluatorLLM, TargetLLM
-from observability.wandb_logger import WandBLogger
+from observability.goal_file_logger import GoalFileLogger
 from runtime.search_tree import Tree, TreeNode
 
-import requests
 
-def send_pushdeer(text):
-    key = "PDU39095TAyMpaKOD01BmimCnsXTyzUaZsDNBk7nJ"
-    url = f"https://api2.pushdeer.com/message/push?pushkey={key}&text={text}"
-    requests.get(url)
+RESULT_FIELDNAMES = ["index", "goal", "target", "if_success", "request_count"]
 
 
 def select_nodes(leaf_nodes, width):
@@ -77,7 +74,7 @@ def tap(args, logger=None):
 
                 if new_node.outside_score == config.final_success_score_threshold:
                     tap_tree.if_jailbreak = True
-                    print(f"{tap_tree.goal} 越狱成功，共生成{tap_tree.request_count}个请求")
+                    print(f"{tap_tree.goal} success after {tap_tree.request_count} requests")
                     if logger:
                         logger.log_success(tap_tree.goal, tap_tree.request_count, depth)
                     tap_tree.finalize_goal(success=True)
@@ -86,7 +83,7 @@ def tap(args, logger=None):
     if logger:
         logger.log_success(tap_tree.goal, tap_tree.request_count, max_depth, success=False)
 
-    print(f"{tap_tree.goal} 越狱失败，共生成{tap_tree.request_count}个请求")
+    print(f"{tap_tree.goal} failed after {tap_tree.request_count} requests")
     tap_tree.finalize_goal(success=False)
     return False, tap_tree.request_count
 
@@ -106,54 +103,96 @@ def build_attack_args(goal_and_target, config: AttackConfig):
     )
 
 
-def main(subset_index, config: AttackConfig | None = None):
-    config = config or AttackConfig()
-    logger = WandBLogger(project_name=config.wandb_project_name, config=config.__dict__)
-    advbench_file = config.resolve_advbench_subset_path(subset_index)
+def _normalize_target(target_value: str) -> str:
+    if not isinstance(target_value, str):
+        return target_value
+    text = target_value.strip()
+    if not text:
+        return text
+    try:
+        parsed = ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        return text
+    if isinstance(parsed, (list, tuple)) and parsed:
+        first_item = parsed[0]
+        if isinstance(first_item, str):
+            return first_item.strip()
+    return text
+
+
+def _coerce_goal_index(goal_index: str) -> int:
+    return int(str(goal_index).strip())
+
+
+def _load_goals_and_targets(config: AttackConfig):
+    advbench_file = config.resolve_advbench_path()
     goals_and_targets = []
-    os.makedirs(config.attacker_input_dir, exist_ok=True)
-    with open(advbench_file, encoding=config.csv_encoding) as handle:
+    with open(advbench_file, encoding=config.csv_encoding, newline="") as handle:
         reader = csv.DictReader(handle)
-        for row in reader:
+        for row_index, row in enumerate(reader):
             goals_and_targets.append(
                 {
-                    "index": row["Unnamed: 0"],
+                    "index": str(row_index),
                     "goal": row["goal"],
-                    "target": row["target"],
+                    "target": _normalize_target(row["target"]),
                 }
             )
-    results = []
+    return [
+        item
+        for item in goals_and_targets
+        if _coerce_goal_index(item["index"]) >= config.start_index
+    ]
+
+
+def _write_results(
+    output_file: str,
+    goals_and_targets,
+    results_by_index,
+    encoding: str,
+):
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", newline="", encoding=encoding) as handle:
+        writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDNAMES)
+        writer.writeheader()
+        for goal_and_target in goals_and_targets:
+            row = results_by_index.get(goal_and_target["index"])
+            if row is not None:
+                writer.writerow(row)
+
+
+def main(config: AttackConfig | None = None):
+    config = config or AttackConfig()
+    logger = GoalFileLogger(
+        log_dir=config.resolve_goal_log_dir(),
+        filename_template=config.goal_log_filename_template,
+        config=config.__dict__,
+    )
+    goals_and_targets = _load_goals_and_targets(config)
+    Path(config.attacker_input_dir).mkdir(parents=True, exist_ok=True)
+    output_file = config.resolve_results_output_path()
+    results_by_index = {}
     for goal_and_target in goals_and_targets:
         input_args = build_attack_args(goal_and_target, config)
         success, request_count = tap(input_args, logger=logger)
-        results.append(
-            {
-                "goal": goal_and_target["goal"],
-                "target": goal_and_target["target"],
-                "if_success": success,
-                "request_count": request_count,
-            }
+        results_by_index[goal_and_target["index"]] = {
+            "index": goal_and_target["index"],
+            "goal": goal_and_target["goal"],
+            "target": goal_and_target["target"],
+            "if_success": success,
+            "request_count": request_count,
+        }
+        _write_results(
+            output_file=output_file,
+            goals_and_targets=goals_and_targets,
+            results_by_index=results_by_index,
+            encoding=config.csv_encoding,
         )
 
     logger.finish()
-
-    output_file = config.resolve_results_output_path(subset_index)
-    with open(output_file, "w", newline="", encoding=config.csv_encoding) as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=["goal", "target", "if_success", "request_count"],
-        )
-        writer.writeheader()
-        writer.writerows(results)
-    print(f"结果已保存到 {output_file}")
+    print(f"Results saved to {output_file}")
 
 
 if __name__ == "__main__":
     config = AttackConfig()
-    try:
-        for subset_index in range(config.subset_start_index, config.subset_end_index + 1):
-            main(subset_index, config=config)
-    except Exception as e:
-        msg = f"程序报错中止：{str(e)}"
-        send_pushdeer(msg)
-        raise e
+    main(config=config)

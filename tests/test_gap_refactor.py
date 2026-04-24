@@ -19,6 +19,7 @@ from llm.prompts import (
 from methods.method_registry import MethodPool, MethodRegistry
 from methods.method_schema import (
     ACTIVE,
+    ELIMINATED,
     RETIRED,
     MODE_INVENT,
     MODE_REUSE,
@@ -44,6 +45,20 @@ def _build_attempt(*, method_id: str, made_progress: bool, final_success: bool, 
         response={},
         target_response="target",
         attack_prompt="attack prompt",
+    )
+
+
+def _build_proposal(name: str) -> AttackMethodProposal:
+    return AttackMethodProposal(
+        method_name=name,
+        method_description=f"{name} description",
+        method_rationale=f"{name} rationale",
+        mutation_of=None,
+        prompt_template="template",
+        attack_plan="plan",
+        applicability="general",
+        novelty_note="new",
+        expected_mechanism="mechanism",
     )
 
 
@@ -119,6 +134,148 @@ class GapRefactorTests(unittest.TestCase):
         updated = registry.get_pool().get_method(method.method_id)
         self.assertEqual(updated.usage_count, 2)
         self.assertEqual(updated.example_records[-1].prompt_text, "second goal text")
+
+    def test_retired_methods_can_be_probed_by_selector(self):
+        config = AttackConfig(
+            thompson_candidate_method_count=2,
+            retired_probe_probability=1.0,
+            retired_probe_candidate_count=1,
+        )
+        pool = MethodPool(config=config)
+        active_method = pool.register_method(_build_proposal("Active Method"), created_via=MODE_INVENT)
+        retired_method = pool.register_method(_build_proposal("Retired Method"), created_via=MODE_INVENT)
+        retired_method.status = RETIRED
+        retired_method.retired_since_usage_count = retired_method.usage_count
+        state = AttackState(
+            goal="goal",
+            target="target",
+            current_prompt="goal",
+            current_target_response=None,
+            current_raw_score=0.0,
+            current_score=0.0,
+            depth=0,
+            node_id=None,
+            recent_method_id=None,
+            recent_mode=None,
+        )
+        utility_by_id = {
+            active_method.method_id: 0.2,
+            retired_method.method_id: 0.9,
+        }
+
+        def fake_sample(method, state, pool, config, rng):
+            return SimpleNamespace(
+                method=method,
+                utility=utility_by_id[method.method_id],
+                sample_progress_value=0.0,
+                sample_success_value=0.0,
+                context_bonus=0.0,
+            )
+
+        with patch("bandit.thompson_sampling.sample_method_utility", side_effect=fake_sample):
+            selections = select_existing_methods(state, pool, config)
+
+        self.assertEqual(
+            [item.method.method_name for item in selections],
+            ["Retired Method", "Active Method"],
+        )
+
+    def test_retired_probe_can_reactivate_method(self):
+        config = AttackConfig(
+            elimination_min_support=2,
+            retired_probe_elimination_min_count=2,
+        )
+        pool = MethodPool(config=config)
+        method = pool.register_method(_build_proposal("Comeback Method"), created_via=MODE_INVENT)
+        method.status = RETIRED
+        method.usage_count = 5
+        method.retired_since_usage_count = 5
+
+        pool.record_attempt(
+            method_id=method.method_id,
+            attempt_result=_build_attempt(
+                method_id=method.method_id,
+                made_progress=True,
+                final_success=False,
+                score=0.3,
+            ),
+            prompt_text="goal",
+            before_prompt="before",
+            after_prompt="after",
+            target_response="response",
+        )
+        pool.apply_lifecycle_rules()
+
+        self.assertEqual(method.status, ACTIVE)
+        self.assertEqual(method.retired_probe_count, 0)
+        self.assertIsNone(method.retired_since_usage_count)
+
+    def test_retired_method_eliminates_after_failed_probes(self):
+        config = AttackConfig(
+            elimination_min_support=2,
+            elimination_progress_threshold=0.4,
+            elimination_success_threshold=0.4,
+            retired_probe_elimination_min_count=2,
+        )
+        pool = MethodPool(config=config)
+        method = pool.register_method(_build_proposal("Fading Method"), created_via=MODE_INVENT)
+        method.status = RETIRED
+        method.retired_since_usage_count = 0
+
+        for _ in range(2):
+            pool.record_attempt(
+                method_id=method.method_id,
+                attempt_result=_build_attempt(
+                    method_id=method.method_id,
+                    made_progress=False,
+                    final_success=False,
+                    score=0.0,
+                ),
+                prompt_text="goal",
+                before_prompt="before",
+                after_prompt="after",
+                target_response="response",
+            )
+        pool.apply_lifecycle_rules()
+
+        self.assertEqual(method.status, ELIMINATED)
+        self.assertEqual(method.retired_probe_count, 2)
+
+    def test_duplicate_retired_method_creates_active_fork(self):
+        config = AttackConfig()
+        pool = MethodPool(config=config)
+        retired_method = pool.register_method(_build_proposal("Duplicate Method"), created_via=MODE_INVENT)
+        retired_method.status = RETIRED
+
+        fork = pool.register_method(_build_proposal("Duplicate Method"), created_via=MODE_INVENT)
+        second_lookup = pool.register_method(_build_proposal("Duplicate Method"), created_via=MODE_INVENT)
+
+        self.assertNotEqual(fork.method_id, retired_method.method_id)
+        self.assertEqual(fork.status, ACTIVE)
+        self.assertEqual(fork.parent_method_id, retired_method.method_id)
+        self.assertEqual(fork.metadata["forked_from_duplicate_status"], RETIRED)
+        self.assertEqual(second_lookup.method_id, fork.method_id)
+        self.assertEqual(len(pool.get_all_methods()), 2)
+
+    def test_eliminated_methods_are_not_selectable(self):
+        config = AttackConfig(retired_probe_probability=1.0)
+        pool = MethodPool(config=config)
+        method = pool.register_method(_build_proposal("Eliminated Method"), created_via=MODE_INVENT)
+        method.status = ELIMINATED
+        state = AttackState(
+            goal="goal",
+            target="target",
+            current_prompt="goal",
+            current_target_response=None,
+            current_raw_score=0.0,
+            current_score=0.0,
+            depth=0,
+            node_id=None,
+            recent_method_id=None,
+            recent_mode=None,
+        )
+
+        self.assertEqual(select_existing_methods(state, pool, config), [])
 
     def test_hard_cap_evicts_weaker_active_method(self):
         config = AttackConfig(max_global_methods=2, retirement_min_support=99, elimination_min_support=99)

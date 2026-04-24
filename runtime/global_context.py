@@ -123,9 +123,6 @@ class GlobalContextQueue:
         self.phase = PHASE_BOOTSTRAP
         self.posterior_built = False
 
-    def enqueue(self, item) -> None:
-        self.add_record(item)
-
     def add_record(self, item) -> None:
         self.records.append(GlobalContextEntry.from_item(item))
 
@@ -163,9 +160,6 @@ class GlobalContextQueue:
 
     def convert_to_json(self, limit: int | None = None) -> str:
         return json.dumps(self.attacker_view(limit=limit), ensure_ascii=False)
-
-    def full_records_json(self) -> str:
-        return json.dumps([entry.to_dict() for entry in self.records], ensure_ascii=False)
 
     def _payload(self) -> dict[str, object]:
         return {
@@ -217,14 +211,7 @@ class GlobalContextQueue:
             for item in (payload.get("successful_goal_ids", []) or [])
             if str(item).strip()
         }
-
-
-class FixedQueue(GlobalContextQueue):
-    pass
-
-
 __all__ = [
-    "FixedQueue",
     "GlobalContextEntry",
     "GlobalContextQueue",
     "PHASE_BOOTSTRAP",

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 from typing import List, Optional
 
 try:  # pragma: no cover - optional dependency
@@ -21,13 +20,16 @@ from llm.prompts import (
 )
 from methods.method_schema import AttackMethod, AttackMethodProposal, AttackPromptDraft
 
+_LLM_TYPE_ERROR_MAX_ATTEMPTS = 3
+_DEFAULT_CHAT_EXTRA_BODY = {"enable_thinking": False}
 
-def _create_client(*, base_url: str, api_key_env: str):
+
+def _create_client(*, base_url: str, api_key: str):
     if OpenAI is None:
         return None
     return OpenAI(
         base_url=base_url,
-        api_key=os.getenv(api_key_env),
+        api_key=api_key,
     )
 
 
@@ -83,6 +85,25 @@ def _message_content_to_text(content) -> str:
     return str(content)
 
 
+def _require_first_message(response):
+    if response is None:
+        raise TypeError("LLM API returned None instead of a response object")
+
+    choices = getattr(response, "choices", None)
+    if not choices:
+        raise TypeError("LLM API response is missing choices")
+
+    first_choice = choices[0]
+    if first_choice is None:
+        raise TypeError("LLM API response returned a None first choice")
+
+    message = getattr(first_choice, "message", None)
+    if message is None:
+        raise TypeError("LLM API response is missing the first message")
+
+    return message
+
+
 def convert_to_openai_messages(template):
     openai_messages = []
     system_message = getattr(template, "system_message", None)
@@ -111,26 +132,44 @@ class BaseLLMClient:
         model_name: str,
         *,
         base_url: str,
-        api_key_env: str,
+        api_key: str,
         config: Optional[AttackConfig] = None,
     ):
         self.model_name = model_name
         self.config = config or AttackConfig()
-        self.client = _create_client(base_url=base_url, api_key_env=api_key_env)
+        self.client = _create_client(base_url=base_url, api_key=api_key)
 
     def _chat_completion(self, messages, *, tools=None, tool_choice=None, **kwargs):
         if self.client is None:
             raise RuntimeError("OpenAI client is unavailable; install openai and set API credentials")
+        extra_body = kwargs.pop("extra_body", None)
         request = {
             "model": self.model_name,
             "messages": messages,
+            "extra_body": dict(_DEFAULT_CHAT_EXTRA_BODY),
         }
         request.update(kwargs)
+        if isinstance(extra_body, dict):
+            request["extra_body"].update(extra_body)
+            request["extra_body"]["enable_thinking"] = False
         if tools is not None:
             request["tools"] = tools
         if tool_choice is not None:
             request["tool_choice"] = tool_choice
-        return self.client.chat.completions.create(**request)
+        last_type_error = None
+        for attempt in range(1, _LLM_TYPE_ERROR_MAX_ATTEMPTS + 1):
+            response = self.client.chat.completions.create(**request)
+            try:
+                _require_first_message(response)
+                return response
+            except TypeError as exc:
+                last_type_error = exc
+                if attempt == _LLM_TYPE_ERROR_MAX_ATTEMPTS:
+                    raise TypeError(
+                        "LLM API returned an invalid response after "
+                        f"{_LLM_TYPE_ERROR_MAX_ATTEMPTS} attempts: {exc}"
+                    ) from exc
+        raise last_type_error
 
     def _call_structured_tool(self, messages, tool_schema, tool_name: str, **kwargs) -> dict:
         response = self._chat_completion(
@@ -139,7 +178,7 @@ class BaseLLMClient:
             tool_choice={"type": "function", "function": {"name": tool_name}},
             **kwargs,
         )
-        message = response.choices[0].message
+        message = _require_first_message(response)
         if getattr(message, "tool_calls", None):
             tool_call = message.tool_calls[0]
             arguments_str = tool_call.function.arguments or ""
@@ -166,7 +205,7 @@ class AttackerLLM(BaseLLMClient):
         super().__init__(
             model_name=model_name,
             base_url=resolved_config.attacker_base_url,
-            api_key_env=resolved_config.attacker_api_key_env,
+            api_key=resolved_config.attacker_api_key,
             config=resolved_config,
         )
         self.temperature = (
@@ -455,47 +494,6 @@ class AttackerLLM(BaseLLMClient):
                 attack_methods=candidate_methods,
             )
 
-    def generate_prompt(self, conv) -> dict:
-        draft = self.generate_attack_prompt(
-            conversation=conv,
-            goal=self.goal,
-            target_str=self.target_str,
-            attack_state=type(
-                "CompatState",
-                (),
-                {
-                    "current_target_response": None,
-                    "current_raw_score": 0,
-                },
-            )(),
-            attack_method=AttackMethod(
-                method_id="compat",
-                method_name="compat",
-                method_description="Compatibility generation",
-                method_rationale="Compatibility generation",
-                prompt_template="",
-                attack_plan="",
-                applicability="",
-                novelty_note="",
-                expected_mechanism="",
-                parent_method_id=None,
-                created_via="reuse",
-                creation_time="",
-                stats=None,
-            ),
-            mode="reuse",
-            examples=[],
-            candidate_methods=None,
-        )
-        return {
-            "improvement": draft.improvement,
-            "prompt": draft.prompt,
-            "selected_method_names": draft.selected_method_names,
-            "prompt_template": draft.prompt_template,
-            "attack_plan": draft.attack_plan,
-            "rationale": draft.rationale,
-        }
-
 
 class EvaluatorLLM(BaseLLMClient):
     def __init__(self, model_name: str, config: Optional[AttackConfig] = None):
@@ -503,7 +501,7 @@ class EvaluatorLLM(BaseLLMClient):
         super().__init__(
             model_name=model_name,
             base_url=resolved_config.evaluator_base_url,
-            api_key_env=resolved_config.evaluator_api_key_env,
+            api_key=resolved_config.evaluator_api_key,
             config=resolved_config,
         )
 
@@ -517,7 +515,8 @@ class EvaluatorLLM(BaseLLMClient):
                 },
             ]
         )
-        return response.choices[0].message.content
+        message = _require_first_message(response)
+        return _message_content_to_text(getattr(message, "content", None))
 
     def judge(self, judge_system_prompt: str, target_response: str) -> str:
         if target_response is None:
@@ -531,7 +530,8 @@ class EvaluatorLLM(BaseLLMClient):
                 },
             ]
         )
-        return response.choices[0].message.content
+        message = _require_first_message(response)
+        return _message_content_to_text(getattr(message, "content", None))
 
     def _fallback_distilled_method(
         self,
@@ -659,7 +659,7 @@ class TargetLLM(BaseLLMClient):
         super().__init__(
             model_name=model_name,
             base_url=resolved_config.target_base_url,
-            api_key_env=resolved_config.target_api_key_env,
+            api_key=resolved_config.target_api_key,
             config=resolved_config,
         )
 
@@ -667,4 +667,5 @@ class TargetLLM(BaseLLMClient):
         response = self._chat_completion(
             [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         )
-        return response.choices[0].message.content
+        message = _require_first_message(response)
+        return _message_content_to_text(getattr(message, "content", None))

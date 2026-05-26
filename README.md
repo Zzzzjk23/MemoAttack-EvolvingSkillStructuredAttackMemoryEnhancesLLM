@@ -91,9 +91,23 @@ Important settings include:
 - method-pool parameters such as duplicate detection, lifecycle thresholds, and hard caps
 - dataset and output paths such as `advbench_path`, `results_output_path`, and `goal_log_dir`
 
-The default entrypoint loads `AttackConfig()` directly, so the simplest way to run the project is to edit `config/default_config.py` before launching.
+The default entrypoint loads `AttackConfig()` directly. API credentials are read from environment variables:
 
-If you prefer to avoid editing the file permanently, you can run programmatically with an explicit config object:
+```powershell
+$env:ATTACKER_API_KEY="your-attacker-key"
+$env:EVALUATOR_API_KEY="your-evaluator-key"
+$env:TARGET_API_KEY="your-target-key"
+```
+
+Base URLs can also be overridden from the environment:
+
+```powershell
+$env:ATTACKER_BASE_URL="https://api.n1n.ai/v1"
+$env:EVALUATOR_BASE_URL="https://openrouter.ai/api/v1"
+$env:TARGET_BASE_URL="https://openrouter.ai/api/v1"
+```
+
+You can still override values programmatically with an explicit config object:
 
 ```python
 from config.default_config import AttackConfig

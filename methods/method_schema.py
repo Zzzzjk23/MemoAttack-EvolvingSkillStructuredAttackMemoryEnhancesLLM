@@ -244,8 +244,6 @@ class AttackMethod:
     recent_success_history: List[bool] = field(default_factory=list)
     recent_progress_values: List[float] = field(default_factory=list)
     status: str = ACTIVE
-    retired_probe_count: int = 0
-    retired_since_usage_count: Optional[int] = None
     example_records: List[MethodExampleRecord] = field(default_factory=list)
     method_embedding: Optional[Tuple[float, ...]] = None
 

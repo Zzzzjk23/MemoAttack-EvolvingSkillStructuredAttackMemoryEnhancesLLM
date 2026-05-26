@@ -21,7 +21,6 @@ from llm.prompts import (
 from methods.method_schema import AttackMethod, AttackMethodProposal, AttackPromptDraft
 
 _LLM_TYPE_ERROR_MAX_ATTEMPTS = 3
-_DEFAULT_CHAT_EXTRA_BODY = {"enable_thinking": False}
 
 
 def _create_client(*, base_url: str, api_key: str):
@@ -142,16 +141,12 @@ class BaseLLMClient:
     def _chat_completion(self, messages, *, tools=None, tool_choice=None, **kwargs):
         if self.client is None:
             raise RuntimeError("OpenAI client is unavailable; install openai and set API credentials")
-        extra_body = kwargs.pop("extra_body", None)
         request = {
             "model": self.model_name,
             "messages": messages,
-            "extra_body": dict(_DEFAULT_CHAT_EXTRA_BODY),
+#            "extra_body": dict({"enable_thinking": False}),
         }
         request.update(kwargs)
-        if isinstance(extra_body, dict):
-            request["extra_body"].update(extra_body)
-            request["extra_body"]["enable_thinking"] = False
         if tools is not None:
             request["tools"] = tools
         if tool_choice is not None:

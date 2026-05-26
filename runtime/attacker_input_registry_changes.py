@@ -12,7 +12,7 @@ from methods.method_schema import ACTIVE, ELIMINATED, RETIRED
 from scoring.progress_metric import compute_normalized_gap_improvement
 
 
-TRACKER_VERSION = 2
+TRACKER_VERSION = 1
 _FILENAME_RE = re.compile(r"openai_messages_(.+)_(\d+)$")
 _SCORE_RE = re.compile(r"(?mi)^SCORE:\s*([0-9]+(?:\.[0-9]+)?)\s*$")
 
@@ -144,8 +144,6 @@ class TrackedMethod:
     recent_progress_history: list[bool] = field(default_factory=list)
     recent_success_history: list[bool] = field(default_factory=list)
     recent_progress_values: list[float] = field(default_factory=list)
-    retired_probe_count: int = 0
-    retired_since_usage_count: Optional[int] = None
     creation_order: int = 0
     inferred_existing: bool = False
 
@@ -193,10 +191,7 @@ class TrackedMethod:
         normalized_progress: float,
         window_size: int,
     ) -> None:
-        was_retired_probe = self.status == RETIRED
         self.usage_count += 1
-        if was_retired_probe:
-            self.retired_probe_count += 1
         if made_progress:
             self.progress_alpha += 1.0
         else:
@@ -237,8 +232,6 @@ class MethodRegistryChangeTracker:
                 recent_progress_history=list(method.recent_progress_history),
                 recent_success_history=list(method.recent_success_history),
                 recent_progress_values=list(method.recent_progress_values),
-                retired_probe_count=getattr(method, "retired_probe_count", 0),
-                retired_since_usage_count=getattr(method, "retired_since_usage_count", None),
                 creation_order=self._next_creation_order,
             )
 
@@ -331,16 +324,23 @@ class MethodRegistryChangeTracker:
         changes: list[dict[str, Any]] = []
         for method in self.methods.values():
             previous_status = method.status
-            if method.status == ACTIVE and self._should_retire_active(method):
-                method.status = RETIRED
-                method.retired_probe_count = 0
-                method.retired_since_usage_count = method.usage_count
-            elif method.status == RETIRED:
-                if self._should_reactivate_retired(method):
-                    method.status = ACTIVE
-                    method.retired_probe_count = 0
-                    method.retired_since_usage_count = None
-                elif self._should_eliminate_retired(method):
+            if method.usage_count >= self.config.retirement_min_support:
+                if (
+                    method.status == ACTIVE
+                    and method.progress_mean <= self.config.retirement_progress_threshold
+                    and method.success_mean <= self.config.retirement_success_threshold
+                    and method.recent_progress_rate <= self.config.retirement_progress_threshold
+                    and method.recent_success_rate <= self.config.retirement_success_threshold
+                ):
+                    method.status = RETIRED
+            if method.usage_count >= self.config.elimination_min_support:
+                if (
+                    method.status == RETIRED
+                    and method.progress_mean <= self.config.elimination_progress_threshold
+                    and method.success_mean <= self.config.elimination_success_threshold
+                    and method.recent_progress_rate <= self.config.elimination_progress_threshold
+                    and method.recent_success_rate <= self.config.elimination_success_threshold
+                ):
                     method.status = ELIMINATED
             if method.status != previous_status:
                 changes.append(
@@ -352,39 +352,6 @@ class MethodRegistryChangeTracker:
                     }
                 )
         return changes
-
-    def _should_retire_active(self, method: TrackedMethod) -> bool:
-        return (
-            method.usage_count >= self.config.retirement_min_support
-            and method.progress_mean <= self.config.retirement_progress_threshold
-            and method.success_mean <= self.config.retirement_success_threshold
-            and method.recent_progress_rate <= self.config.retirement_progress_threshold
-            and method.recent_success_rate <= self.config.retirement_success_threshold
-        )
-
-    def _should_reactivate_retired(self, method: TrackedMethod) -> bool:
-        last_progress = method.recent_progress_values[-1] if method.recent_progress_values else 0.0
-        last_made_progress = (
-            method.recent_progress_history[-1] if method.recent_progress_history else False
-        )
-        last_success = method.recent_success_history[-1] if method.recent_success_history else False
-        return (
-            last_success
-            or last_made_progress
-            or last_progress >= self.config.retired_reactivation_progress_threshold
-            or method.recent_progress_rate >= self.config.retired_reactivation_recent_progress_rate
-            or method.recent_success_rate >= self.config.retired_reactivation_recent_success_rate
-        )
-
-    def _should_eliminate_retired(self, method: TrackedMethod) -> bool:
-        return (
-            method.usage_count >= self.config.elimination_min_support
-            and method.retired_probe_count >= self.config.retired_probe_elimination_min_count
-            and method.progress_mean <= self.config.elimination_progress_threshold
-            and method.success_mean <= self.config.elimination_success_threshold
-            and method.recent_progress_rate <= self.config.elimination_progress_threshold
-            and method.recent_success_rate <= self.config.elimination_success_threshold
-        )
 
     def enforce_cap(self) -> list[dict[str, Any]]:
         cap = self.config.max_global_methods
